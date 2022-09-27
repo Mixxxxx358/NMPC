@@ -21,7 +21,7 @@ class DuffingOscillator(deepSI.System_deriv):
 
 class FullStateDuffingOscillator(deepSI.System_deriv):
     def __init__(self):
-        super(DuffingOscillator, self).__init__(nx=2, dt=0.1)
+        super(FullStateDuffingOscillator, self).__init__(nx=2, dt=0.1)
         self.alpha = 1
         self.beta = 5
         self.gamma = 1
