@@ -2,8 +2,8 @@ import deepSI
 import numpy as np
 
 class DuffingOscillator(deepSI.System_deriv):
-    def __init__(self):
-        super(DuffingOscillator, self).__init__(nx=2, dt=0.1)
+    def __init__(self, dt=0.1):
+        super(DuffingOscillator, self).__init__(nx=2, dt=dt)
         self.alpha = 1
         self.beta = 5
         self.gamma = 1
@@ -38,8 +38,8 @@ class FullStateDuffingOscillator(deepSI.System_deriv):
         return x
 
 class UnbalancedDisc(deepSI.System_deriv):
-    def __init__(self):
-        super(UnbalancedDisc, self).__init__(nx=2, dt=0.1)
+    def __init__(self, dt=0.025):
+        super(UnbalancedDisc, self).__init__(nx=2, dt=dt)
         self.g = 9.80155078791343
         self.J = 0.000244210523960356
         self.Km = 10.5081817407479
