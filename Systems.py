@@ -54,4 +54,4 @@ class UnbalancedDisc(deepSI.System_deriv):
         return [dz1,dz2]
 
     def h(self,x,u):
-        return x + np.hstack((np.random.normal(0, 1.0, 1), np.random.normal(0, 0.1, 1)))
+        return x + np.hstack((np.random.normal(0, 0.47, 1), np.random.normal(0, 0.044, 1)))

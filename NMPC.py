@@ -3,7 +3,9 @@ import numpy as np
 from casadi import *
 from torch import nn
 from Systems import DuffingOscillator
+import Systems
 from matplotlib import pyplot as plt
+import random
 
 from my_rk4 import *
 from lpv_int import *
@@ -23,7 +25,7 @@ class I_encoder(deepSI.fit_systems.SS_encoder):
         hn_in = self.nx + nu if self.feedthrough else self.nx
         self.hn =      nn.Identity(hn_in)
 
-def CasADiFn(ss_enc, x, u):
+def CasADiExp(ss_enc, x, u):
     n_hidden_layers = ss_enc.f_n_hidden_layers
     nu = ss_enc.nu if ss_enc.nu is not None else 1
 
@@ -51,21 +53,19 @@ def CasADiFn(ss_enc, x, u):
     #f = Function('f', [x, u], [nn_NL + nn_Lin])
     return nn_NL + nn_Lin
 
-def NMPC(x_min, x_max, u_min, u_max, x0, x_ref, u_ref, Q, R, dt, Nc, Nsim, dlam, stages, reference_list):
-    sys_Duff = DuffingOscillator()
-    I_enc = deepSI.load_system("systems/FullOutputSS_dt01_e300")
-
+def NMPC(system, encoder, x_min, x_max, u_min, u_max, x0, u_ref, Q, R, dt, dlam, stages, x_reference_list, Nc=5, Nsim=30, max_iterations=1):
     # declared sym variables
-    x = MX.sym("x",I_enc.nx,1)
+    nx = encoder.nx
+    x = MX.sym("x",nx,1)
     nu = I_enc.nu if I_enc.nu is not None else 1
     u = MX.sym("u",nu,1)
 
     # convert torch nn to casadi function
-    rhs = CasADiFn(I_enc, x, u)
+    rhs = CasADiExp(I_enc, x, u)
     f = Function('f', [x, u], [rhs])
     correction = f([0,0], 0)
     rhs_c = rhs - correction
-    f_c = Function('f_c', [x, u], [rhs_c])
+    #f_c = Function('f_c', [x, u], [rhs_c])
 
     opti = Opti()
 
@@ -89,6 +89,8 @@ def NMPC(x_min, x_max, u_min, u_max, x0, x_ref, u_ref, Q, R, dt, Nc, Nsim, dlam,
     list_A = opti.parameter(Nc*n_states,n_states)
     list_B = opti.parameter(Nc*n_states,n_controls)
 
+
+
     # declare bounds of system
     opti.subject_to(opti.bounded(x_min,states,x_max))
     opti.subject_to(opti.bounded(u_min,controls,u_max))
@@ -111,14 +113,14 @@ def NMPC(x_min, x_max, u_min, u_max, x0, x_ref, u_ref, Q, R, dt, Nc, Nsim, dlam,
 
     opti.minimize(objective)
     
-    # determine reference
-    #reference_list = np.sin(np.arange(Nsim+1)*2*np.pi/32)*1
+
 
     # logging list
-    u_log = np.zeros([n_controls,Nsim])
     t = np.zeros(Nsim)
     t0 = 0
+    u_log = np.zeros([n_controls,Nsim])
     x_log = np.zeros([n_states,Nsim+1])
+    x_log[:,0] = x0
     start = time.time()
 
     # iteration values
@@ -132,8 +134,8 @@ def NMPC(x_min, x_max, u_min, u_max, x0, x_ref, u_ref, Q, R, dt, Nc, Nsim, dlam,
     opti.set_value(x_initial,x0)
     #x[:,0] = np.ravel(x0)
 
-    norm = I_enc.norm
-    max_iterations = 10
+    norm = encoder.norm
+    reference_list_normalized = (x_reference_list - norm.y0[1])/norm.ystd[1]#encoder.norm.ystd[1]*x_reference_list + I_enc.norm.y0[1]
 
     for mpciter in np.arange(Nsim):
         # determine A,B
@@ -142,7 +144,7 @@ def NMPC(x_min, x_max, u_min, u_max, x0, x_ref, u_ref, Q, R, dt, Nc, Nsim, dlam,
             opti.set_value(list_B[(n_states*i):(n_states*i+n_states),:],get_B(x[:,i],u[:,i]))
         
         # solve for u and x
-        opti.set_value(reference,[0,reference_list[mpciter]])
+        opti.set_value(reference,[0,reference_list_normalized[mpciter]])
         sol = opti.solve();
         u_old = u
         u = np.reshape(sol.value(controls),[n_controls,Nc])
@@ -176,8 +178,8 @@ def NMPC(x_min, x_max, u_min, u_max, x0, x_ref, u_ref, Q, R, dt, Nc, Nsim, dlam,
 
             lpv_counter[mpciter] += 1  
 
-        print("MPC iteration: ", mpciter+1)
-        print("LPV counter: ", lpv_counter[mpciter])
+        #print("MPC iteration: ", mpciter+1)
+        #print("LPV counter: ", lpv_counter[mpciter])
 
         t[mpciter] = t0
         t0 = t0 + dt
@@ -189,8 +191,8 @@ def NMPC(x_min, x_max, u_min, u_max, x0, x_ref, u_ref, Q, R, dt, Nc, Nsim, dlam,
             u = u.full()
         except:
             u = u
-        x_log[:,mpciter] = x[:,0]
-        u_log[:,mpciter] = u[:,0]
+        #x_log[:,mpciter] = x[:,0]
+        #u_log[:,mpciter] = u[:,0]
         
         # denormalize x and u and run system step
         #x_denormalized = norm.inverse_transform(deepSI.System_data(y=x0)) # make sure
@@ -200,11 +202,12 @@ def NMPC(x_min, x_max, u_min, u_max, x0, x_ref, u_ref, Q, R, dt, Nc, Nsim, dlam,
         #x0 = x[:,1] # change this to real system step
 
         # normalize output of system step
-        x_denormalized = sys_Duff.f(x_denormalized, u_denormalized)
-        x0 = norm.transform(deepSI.System_data(y=x_denormalized))
+        x_denormalized = system.f(x_denormalized, u_denormalized)
+        #x0 = norm.transform(deepSI.System_data(y=x_denormalized))
         x0 = (x_denormalized - norm.y0)/norm.ystd
 
-        x_log[:,mpciter+1] = x0
+        x_log[:,mpciter+1] = x_denormalized
+        u_log[:,mpciter] = u_denormalized
         
         #!!! add x shift and u shift for hot start
         x = horzcat(x[:,1:(Nc+1)],x[:,-1])
@@ -217,34 +220,49 @@ def NMPC(x_min, x_max, u_min, u_max, x0, x_ref, u_ref, Q, R, dt, Nc, Nsim, dlam,
     end = time.time()
     runtime = end - start
 
-    return x_log, u_log, t, runtime, lpv_counter
+    return x_log, u_log, t, runtime, lpv_counter, reference_list_normalized
 
 if __name__ == "__main__":
     # MPC parameters
-    dt = 1/10
+    dt = 0.025
     Nc = 10
-    Nsim = 30
+    Nsim = 200
     dlam = 0.01
     stages = 1
     
     # Box constraints
-    x_min = -4
-    x_max = 4
-    u_min = -2
-    u_max = 2
+    x_min = -10
+    x_max = 10
+    u_min = -10
+    u_max = 10
 
     # Initial and final values
     x0 = [0,0]
     x_ref = [0, 1.5]
-    reference_list = np.sin(np.arange(Nsim+1)*2*np.pi/32)*1
+    #x_reference_list = np.sin(np.arange(Nsim+1)*2*np.pi/32)*1
     u_ref = 0
+    x_reference_list = np.array([])
+    Nsim_remaining = Nsim
+    while True:
+        Nsim_steps = random.randint(5,10)
+        Nsim_remaining = Nsim_remaining - Nsim_steps
+        x_reference_list = np.hstack((x_reference_list, np.ones(Nsim_steps)*random.randint(-15,15)/10))
+
+        if Nsim_remaining <= 0:
+            break
 
     # Weight matrices for the cost function
     #Q = 100
     Q = np.matrix('1,0;0,100')
-    R = 0.001
+    R = 1
+
+    #sys_Duff = DuffingOscillator()
+    sys_unblanced= Systems.UnbalancedDisc()
+    I_enc = deepSI.load_system("systems/UnbalancedDisk_dt0025_e300_SNR_100")
     
-    x_log, u_log, t, runtime, lpv_counter = NMPC(x_min, x_max, u_min, u_max, x0, x_ref, u_ref, Q, R, dt, Nc, Nsim, dlam, stages, reference_list)
+    #opti = NMPC(sys_Duff, I_enc)
+    x_log, u_log, t, runtime, lpv_counter, reference_list_normalized = NMPC(sys_unblanced, I_enc, x_min=x_min, x_max= x_max, u_min=u_min, u_max=u_max, x0=x0,\
+         u_ref=u_ref, Q=Q, R=R, dt=dt, dlam=dlam, stages=stages, x_reference_list=x_reference_list, Nc=Nc, Nsim=Nsim, max_iterations=1)
 
     fig = plt.figure(figsize=[14.0, 3.0])
 
@@ -259,7 +277,8 @@ if __name__ == "__main__":
     plt.subplot(1,3,2)
     plt.plot(np.arange(Nsim+1)*dt, x_log[1,:], label='displacement')
     #plt.plot(np.arange(Nsim+1)*dt, np.ones(x_log.shape[1])*x_ref[1], label='reference')
-    plt.plot(np.arange(Nsim+1)*dt, reference_list, label='reference') # figure out what the correct hstack should be here
+    plt.plot(np.arange(Nsim+1)*dt, np.hstack((np.zeros(1),x_reference_list[:Nsim])), label='reference') # figure out what the correct hstack should be here
+    #plt.plot(np.arange(Nsim+1)*dt, np.hstack((np.zeros(1),reference_list_normalized[:Nsim])), label='de_reference') # figure out what the correct hstack should be here
     plt.ylabel("displacement [m]") # not sure about the unit
     plt.xlabel("time [s]")
     plt.grid()
