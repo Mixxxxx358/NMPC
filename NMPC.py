@@ -121,25 +121,17 @@ def NMPC(system, encoder, x_min, x_max, u_min, u_max, x0, u_ref, Q, R, dt, dlam,
     lpv_counter = np.zeros(Nsim,int)
 
     # set initial values for x
-    x = np.zeros([n_states,Nc+1]) # np.repeat(x0, NC+1)change this to x0 instead of 0
+    x = np.zeros([n_states,Nc+1])
     u = np.zeros([n_controls,Nc]) # change this to u0 instead of 0 maybe
     opti.set_initial(states, x)
     opti.set_initial(controls, u)
-    opti.set_value(x_initial,x0)
-    #x[:,0] = np.ravel(x0)
-
-    norm = encoder.norm
-    reference_list_normalized = (x_reference_list - norm.y0[1])/norm.ystd[1]#encoder.norm.ystd[1]*x_reference_list + I_enc.norm.y0[1]
+    opti.set_value(x_initial,x0_norm)
 
     for mpciter in np.arange(Nsim):
-        # determine A,B
-        for i in np.arange(Nc):
-            opti.set_value(list_A[(n_states*i):(n_states*i+n_states),:],get_A(x[:,i],u[:,i]))
-            opti.set_value(list_B[(n_states*i):(n_states*i+n_states),:],get_B(x[:,i],u[:,i]))
-        
+        start_time_iter = time.time()
+
         # solve for u and x
         opti.set_value(reference,[0,reference_list_normalized[mpciter]])
-
 
         # MPC loop
         while True:
@@ -182,20 +174,15 @@ def NMPC(system, encoder, x_min, x_max, u_min, u_max, x0, u_ref, Q, R, dt, dlam,
             u = u.full()
         except:
             u = u
-        #x_log[:,mpciter] = x[:,0]
-        #u_log[:,mpciter] = u[:,0]
         
-        # denormalize x and u and run system step
-        #x_denormalized = norm.inverse_transform(deepSI.System_data(y=x0)) # make sure
-        x_denormalized = norm.ystd*x0 + norm.y0
-        #u_denormalized = norm.inverse_transform(deepSI.System_data(u=u[0,0]))
+        # denormalize x and u
+        x_denormalized = norm.ystd*x0_norm + norm.y0
         u_denormalized = norm.ustd*u[0,0] + norm.u0
-        #x0 = x[:,1] # change this to real system step
 
         # make system step and normalize
         x_denormalized = system.f(x_denormalized, u_denormalized)
-        #x0 = norm.transform(deepSI.System_data(y=x_denormalized))
-        x0 = (x_denormalized - norm.y0)/norm.ystd
+        x_measured = system.h(x_denormalized, u_denormalized)
+        x0_norm = (x_measured - norm.y0)/norm.ystd
 
         x_log[:,mpciter+1] = x_measured
         u_log[:,mpciter] = u_denormalized
@@ -218,9 +205,9 @@ def NMPC(system, encoder, x_min, x_max, u_min, u_max, x0, u_ref, Q, R, dt, dlam,
 
 if __name__ == "__main__":
     # MPC parameters
-    dt = 0.025
+    dt = 0.1
     Nc = 10
-    Nsim = 30
+    Nsim = 100
     dlam = 0.01
     stages = 1
     max_iterations = 10
@@ -230,22 +217,23 @@ if __name__ == "__main__":
     R = 1
     
     # Box constraints
-    x_min = -10
-    x_max = 10
-    u_min = -10
-    u_max = 10
+    x_min = -20
+    x_max = 20
+    u_min = -3
+    u_max = 3
 
     # Initial and final values
-    x0 = [3,1]
+    x0 = [0,0]
     x_ref = [0, 1.5]
-    #x_reference_list = np.sin(np.arange(Nsim+1)*2*np.pi/32)*1
     u_ref = 0
+
+    #x_reference_list = np.sin(np.arange(Nsim+1)*2*np.pi/32)*1
     x_reference_list = np.array([])
     Nsim_remaining = Nsim
     while True:
         Nsim_steps = random.randint(10,15)
         Nsim_remaining = Nsim_remaining - Nsim_steps
-        x_reference_list = np.hstack((x_reference_list, np.ones(Nsim_steps)*random.randint(-10,10)/10))
+        x_reference_list = np.hstack((x_reference_list, np.ones(Nsim_steps)*random.randint(-15,15)/10))
 
         if Nsim_remaining <= 0:
             break
@@ -256,11 +244,11 @@ if __name__ == "__main__":
     R = 1
 
     #sys_Duff = DuffingOscillator()
-    sys_unblanced= Systems.UnbalancedDisc()
-    I_enc = deepSI.load_system("systems/UnbalancedDisk_dt0025_e300_SNR_100")
+    sys_unblanced = Systems.NoisyUnbalancedDisc(dt=0.1, sigma_n=[0.33, 0.032])
+    I_enc = deepSI.load_system("systems/UnbalancedDisk_dt01_e100_SNR_100")
     
     #opti = NMPC(sys_Duff, I_enc)
-    x_log, u_log, t, runtime, lpv_counter, reference_list_normalized = NMPC(sys_unblanced, I_enc, x_min=x_min, x_max= x_max, u_min=u_min, u_max=u_max, x0=x0,\
+    x_log, u_log, comp_t_log, t, runtime, lpv_counter, reference_list_normalized = NMPC(sys_unblanced, I_enc, x_min=x_min, x_max= x_max, u_min=u_min, u_max=u_max, x0=x0,\
          u_ref=u_ref, Q=Q, R=R, dt=dt, dlam=dlam, stages=stages, x_reference_list=x_reference_list, Nc=Nc, Nsim=Nsim, max_iterations=1)
 
     fig = plt.figure(figsize=[14.0, 3.0])
@@ -276,8 +264,9 @@ if __name__ == "__main__":
     plt.subplot(2,3,2)
     plt.plot(np.arange(Nsim+1)*dt, x_log[1,:], label='displacement')
     #plt.plot(np.arange(Nsim+1)*dt, np.ones(x_log.shape[1])*x_ref[1], label='reference')
-    plt.plot(np.arange(Nsim+1)*dt, np.hstack((np.zeros(1),x_reference_list[:Nsim])), label='reference') # figure out what the correct hstack should be here
-    #plt.plot(np.arange(Nsim+1)*dt, np.hstack((np.zeros(1),reference_list_normalized[:Nsim])), label='de_reference') # figure out what the correct hstack should be here
+    plt.plot(np.arange(Nsim+1)*dt, np.hstack((np.zeros(1),x_reference_list[:Nsim])), '--', label='reference') # figure out what the correct hstack should be here
+    #plt.plot(np.arange(Nsim)*dt, np.ones(Nsim)*u_ref, '--', label='max')
+    #plt.plot(np.arange(Nsim)*dt, np.ones(Nsim)*u_ref, '--', label='min')
     plt.ylabel("displacement [m]") # not sure about the unit
     plt.xlabel("time [s]")
     plt.grid()
@@ -286,25 +275,29 @@ if __name__ == "__main__":
     plt.subplot(2,3,3)
     plt.plot(np.arange(Nsim)*dt, u_log[0,:], label='input')
     plt.plot(np.arange(Nsim)*dt, np.ones(Nsim)*u_ref, '--', label='reference')
+    plt.plot(np.arange(Nsim)*dt, np.ones(Nsim)*u_max, 'r-.', label='max')
+    plt.plot(np.arange(Nsim)*dt, np.ones(Nsim)*u_min, 'r-.', label='min')
     plt.ylabel("input") # not sure about the unit
     plt.xlabel("time [s]")
     plt.grid()
     plt.legend();
 
     plt.subplot(2,3,4)
-    plt.step(np.arange(Nsim), lpv_counter, label='input')
-    #plt.plot(np.arange(Nsim)*dt, np.ones(Nsim)*u_ref, '--', label='reference')
+    plt.step(np.arange(Nsim), lpv_counter, label='lpv counter')
+    plt.plot(np.arange(Nsim)*dt, np.ones(Nsim)*max_iterations, '--', label='max iter')
     plt.ylabel("lpv counter") # not sure about the unit
     plt.xlabel("mpciter")
     plt.grid()
     plt.legend();
 
     plt.subplot(2,3,5)
-    plt.step(np.arange(Nsim), comp_t_log, label='input')
+    plt.step(np.arange(Nsim), comp_t_log, label='computation time')
     plt.plot(np.arange(Nsim), np.ones(Nsim)*dt, '--', label='dt')
     plt.ylabel("computation time") # not sure about the unit
     plt.xlabel("mpciter")
     plt.grid()
     plt.legend();
+
+    # add epsilon plot
 
     plt.show()
