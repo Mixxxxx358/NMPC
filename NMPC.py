@@ -115,7 +115,7 @@ def NMPC(system, encoder, x_min, x_max, u_min, u_max, x0, u_ref, Q, R, dt, dlam,
                         mtimes(mtimes((states[:,i]-reference).T,Q),(states[:,i]-reference)) +
                         mtimes(mtimes((controls[:,i]-u_ref).T,R),(controls[:,i]-u_ref)))
         opti.subject_to(opti.bounded(x_min_norm - epsilon, states[:,i], x_max_norm + epsilon))
-    objective = objective + epsilon.T @ epsilon *100
+    objective = objective + epsilon.T @ epsilon *1000
     opti.minimize(objective)
 
     # logging list
@@ -218,7 +218,7 @@ if __name__ == "__main__":
     # MPC parameters
     dt = 0.1
     Nc = 5
-    Nsim = 200
+    Nsim = 300
     dlam = 0.01
     stages = 1
     max_iterations = 1
@@ -242,9 +242,9 @@ if __name__ == "__main__":
     x1_reference_list = np.array([])
     Nsim_remaining = Nsim
     while True:
-        Nsim_steps = random.randint(15,20)
+        Nsim_steps = random.randint(10,15)
         Nsim_remaining = Nsim_remaining - Nsim_steps
-        x1_reference_list = np.hstack((x1_reference_list, np.ones(Nsim_steps)*random.randint(-15,15)/10))
+        x1_reference_list = np.hstack((x1_reference_list, np.ones(Nsim_steps)*random.randint(-10,10)/10))
 
         if Nsim_remaining <= 0:
             x1_reference_list = x1_reference_list[:Nsim]
