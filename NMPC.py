@@ -89,6 +89,18 @@ def NMPC(system, encoder, x_min, x_max, u_min, u_max, x0, u_ref, Q, R, dt, dlam,
     # determine getA and getB functions
     Jfx = Function("Jfx", [x, u], [jacobian(rhs_c,x)])
     Jfu = Function("Jfu", [x, u], [jacobian(rhs_c,u)])
+    
+    # LPV generation
+    # Jfx = SX.sym("JFx",n_states,n_states)
+    # Jfu = SX.sym("JFu",n_controls,n_states)
+    # for i in np.arange(n_states):
+    #     Jfx[:,i] = gradient(rhs[i],x)
+    #     Jfu[:,i] = gradient(rhs[i],u)
+    # Jfx = Jfx.T
+    # Jfu = Jfu.T
+    # Jfx = Function("Jfx", [x, u], [Jfx])
+    # Jfu = Function("Jfu", [x, u], [Jfu])
+    
     [A_sym, B_sym] = lpv_int(x,n_states,u,n_controls,Jfx,Jfu,dlam,stages)
     get_A = Function("get_A",[x,u],[A_sym])
     get_B = Function("get_B",[x,u],[B_sym])
@@ -139,7 +151,6 @@ def NMPC(system, encoder, x_min, x_max, u_min, u_max, x0, u_ref, Q, R, dt, dlam,
 
     for mpciter in np.arange(Nsim):
         start_time_iter = time.time()
-
         # solve for u and x
         opti.set_value(reference,[reference_list_normalized[0,mpciter],reference_list_normalized[1,mpciter]])
 
@@ -294,8 +305,9 @@ def NMPC_nonLPV(system, encoder, x_min, x_max, u_min, u_max, x0, u_ref, Q, R, dt
 
         # MPC loop
         while True:
-            # solve for u and x
+            # solve for u and x            
             sol = opti.solve()
+
             u_old = u
             u = np.reshape(sol.value(controls),[n_controls,Nc])
             x = np.reshape(sol.value(states),[n_states,Nc+1]) # this relies on internal simulation in solution, this is x=Ax+Bu
@@ -361,11 +373,11 @@ def NMPC_nonLPV(system, encoder, x_min, x_max, u_min, u_max, x0, u_ref, Q, R, dt
 if __name__ == "__main__":
     # MPC parameters
     dt = 0.1
-    Nc = 10
+    Nc = 5
     Nsim = 200
-    dlam = 0.01
+    dlam = 0.05
     stages = 1
-    max_iterations = 1
+    max_iterations = 5
 
     # Weight matrices for the cost function
     Q = np.matrix('1,0;0,100')
@@ -374,23 +386,26 @@ if __name__ == "__main__":
     # Box constraints
     x_min = [-8, -2]
     x_max = [8, 2]
-    u_min = -3
-    u_max = 3
+    u_min = -6
+    u_max = 6
 
     # Initial and final values
     x0 = [0,0]
     u_ref = 0
 
     # determine state references
-    x_reference_list = np.load("references/randomLevelTime10_15Range-1_1Nsim200.npy")
+    x_reference_list = np.load("references/randomLevelTime15_20Range-1_1Nsim500.npy")
 
     # Weight matrices for the cost function
     Q = np.matrix('1,0;0,100')
     R = 1
 
     # Initialize system and load corresponding encoder
-    sys_unblanced = Systems.NoisyUnbalancedDisc(dt=dt, sigma_n=[0.47, 0.044])
-    I_enc = deepSI.load_system("systems/UnbalancedDisk_dt01_e300_SNR_50")
+    sys_unblanced = Systems.NoisyUnbalancedDisc(dt=dt, sigma_n=[0, 0])
+    #sys_unblanced = Systems.DiscreteUnbalancedDisc(dt=dt)
+    I_enc = deepSI.load_system("systems/UnbalancedDisk_dt01_e100_SNR_100")
+    #I_enc = deepSI.load_system("systems/DiscreteUnbalancedDisk_dt01_e600")
+    
     
     x_log, u_log, e_log, comp_t_log, t, runtime, lpv_counter, reference_list_normalized = NMPC(sys_unblanced, I_enc, \
         x_min=x_min, x_max= x_max, u_min=u_min, u_max=u_max, x0=x0, u_ref=u_ref, Q=Q, R=R, dt=dt, dlam=dlam, stages=stages, \
@@ -432,7 +447,7 @@ if __name__ == "__main__":
 
     plt.subplot(2,3,4)
     plt.step(np.arange(Nsim), lpv_counter, label='lpv counter')
-    plt.plot(np.arange(Nsim)*dt, np.ones(Nsim)*max_iterations, '--', label='max iter')
+    plt.plot(np.arange(Nsim), np.ones(Nsim)*max_iterations, '--', label='max iter')
     plt.ylabel("lpv counter")
     plt.xlabel("mpciter")
     plt.grid()
