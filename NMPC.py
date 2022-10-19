@@ -116,8 +116,10 @@ def NMPC(system, encoder, x_min, x_max, u_min, u_max, x0, u_ref, Q, R, dt, dlam,
     opti.subject_to(opti.bounded(u_min_norm,controls,u_max_norm))
     opti.subject_to(states[:,0] == x_initial)
 
+    # opts = {'print_time' : 0, 'ipopt': {'print_level': 0}}
+    # opti.solver("ipopt",opts)
     opts = {'print_time' : 0, 'ipopt': {'print_level': 0}}
-    opti.solver("ipopt",opts)
+    opti.solver("ipopt", opts)
 
     objective = 0 # add some soft bounds on the states and inputs
     for i in np.arange(Nc):
@@ -308,6 +310,183 @@ def NMPC_nonLPV(system, encoder, x_min, x_max, u_min, u_max, x0, u_ref, Q, R, dt
             # solve for u and x            
             sol = opti.solve()
 
+            u_old = u
+            u = np.reshape(sol.value(controls),[n_controls,Nc])
+            x = np.reshape(sol.value(states),[n_states,Nc+1]) # this relies on internal simulation in solution, this is x=Ax+Bu
+            # simulate next step using rk4 over non correction casadi function
+            #for i in np.arange(Nc):
+            #    x[:,i+1] = np.ravel(my_rk4(x[:,i],u[:,i],f,dt),order='F')
+            x = np.reshape(sol.value(states),[n_states,Nc+1]) # change this to nn maybe
+            
+            # set new x and u values into optimizer
+            opti.set_initial(states, x)
+            opti.set_initial(controls, u)
+
+            lpv_counter[mpciter] += 1  
+
+            # Stop MPC loop if max iteration reached or input converged
+            if (lpv_counter[mpciter] >= max_iterations) or (np.linalg.norm(u-u_old) < 1e-5):
+                break
+
+        print("MPC iteration: ", mpciter+1)
+        print("LPV counter: ", lpv_counter[mpciter])
+
+        t[mpciter] = t0
+        t0 = t0 + dt
+        try:
+            x = x.full()
+        except:
+            x = x
+        try:
+            u = u.full()
+        except:
+            u = u
+        
+        # denormalize x and u
+        x_denormalized = norm.ystd*x0_norm + norm.y0
+        u_denormalized = norm.ustd*u[0,0] + norm.u0
+
+        # make system step and normalize
+        x_denormalized = system.f(x_denormalized, u_denormalized)
+        x_measured = system.h(x_denormalized, u_denormalized)
+        x0_norm = (x_measured - norm.y0)/norm.ystd
+
+        x_log[:,mpciter+1] = x_measured
+        u_log[:,mpciter] = u_denormalized
+        e_log[:,mpciter] = np.reshape(sol.value(epsilon),[n_states,])
+        
+        x = horzcat(x[:,1:(Nc+1)],x[:,-1])
+        x[:,0] = x0_norm
+        u = horzcat(u[:,1:Nc],u[:,-1])
+        opti.set_value(x_initial, x0_norm)
+        opti.set_initial(states, x)
+        opti.set_initial(controls, u)
+        opti.set_initial(epsilon, e_log[:,mpciter])
+
+        # finished mpc time measurement
+        end_time_iter = time.time()
+        comp_t_log[mpciter] = end_time_iter - start_time_iter
+
+    end = time.time()
+    runtime = end - start
+
+    return x_log, u_log, e_log, comp_t_log, t, runtime, lpv_counter, reference_list_normalized
+
+def NMPC_output(system, encoder, x_min, x_max, u_min, u_max, x0, u_ref, Q, R, dt, dlam, stages, x_reference_list, Nc=5, Nsim=30, max_iterations=1):
+    # declared sym variables
+    nx = encoder.nx
+    x = MX.sym("x",nx,1)
+    nu = I_enc.nu if I_enc.nu is not None else 1
+    u = MX.sym("u",nu,1)
+    ny = 1
+    y = MX.sym("y",ny,1)
+
+    # convert torch nn to casadi function
+    rhs = CasADiExp(I_enc, x, u)
+    f = Function('f', [x, u], [rhs])
+    correction = f([0,0], 0)
+    rhs_c = rhs - correction
+    #f_c = Function('f_c', [x, u], [rhs_c])
+
+    opti = Opti()
+
+    # declare variables and parameters of states and inputs
+    n_states = np.shape(x)[0]
+    states = opti.variable(n_states,Nc+1)    
+    x_initial = opti.parameter(n_states,1)
+
+    n_controls = np.shape(u)[0]
+    controls = opti.variable(n_controls,Nc)
+
+    reference = opti.parameter(n_states,1)
+
+    epsilon = opti.variable(n_states,1)
+    opti.subject_to(epsilon[0,0] == epsilon[1,0])
+
+    # normalize reference list
+    norm = encoder.norm
+    reference_list_normalized = ((x_reference_list.T - norm.y0)/norm.ystd).T
+    x0_norm = (x0 - norm.y0)/norm.ystd
+
+    # determine getA and getB functions
+    Jfx = Function("Jfx", [x, u], [jacobian(rhs_c,x)])
+    Jfu = Function("Jfu", [x, u], [jacobian(rhs_c,u)])
+    
+    # LPV generation
+    # Jfx = SX.sym("JFx",n_states,n_states)
+    # Jfu = SX.sym("JFu",n_controls,n_states)
+    # for i in np.arange(n_states):
+    #     Jfx[:,i] = gradient(rhs[i],x)
+    #     Jfu[:,i] = gradient(rhs[i],u)
+    # Jfx = Jfx.T
+    # Jfu = Jfu.T
+    # Jfx = Function("Jfx", [x, u], [Jfx])
+    # Jfu = Function("Jfu", [x, u], [Jfu])
+    
+    [A_sym, B_sym] = lpv_int(x,n_states,u,n_controls,Jfx,Jfu,dlam,stages)
+    get_A = Function("get_A",[x,u],[A_sym])
+    get_B = Function("get_B",[x,u],[B_sym])
+    list_A = opti.parameter(Nc*n_states,n_states)
+    list_B = opti.parameter(Nc*n_states,n_controls)
+
+    # declare bounds of system
+    x_max_norm = (x_max - norm.y0)/norm.ystd
+    x_min_norm = (x_min - norm.y0)/norm.ystd
+    #opti.subject_to(opti.bounded(x_min_norm,states,x_max_norm))
+    u_min_norm = (u_min - norm.u0)/norm.ustd
+    u_max_norm = (u_max - norm.u0)/norm.ustd
+    opti.subject_to(opti.bounded(u_min_norm,controls,u_max_norm))
+    opti.subject_to(states[:,0] == x_initial)
+
+    # opts = {'print_time' : 0, 'ipopt': {'print_level': 0}}
+    # opti.solver("ipopt",opts)
+    opts = {'print_time' : 0, 'ipopt': {'print_level': 0}}
+    opti.solver("ipopt", opts)
+
+    objective = 0 # add some soft bounds on the states and inputs
+    for i in np.arange(Nc):
+        opti.subject_to(states[:,i+1] == list_A[(n_states*i):(n_states*i+n_states),:]@states[:,i] \
+            + list_B[(n_states*i):(n_states*i+n_states),:]@controls[:,i] + correction)
+        objective = (objective + 
+                        mtimes(mtimes((states[:,i]-reference).T,Q),(states[:,i]-reference)) +
+                        mtimes(mtimes((controls[:,i]-u_ref).T,R),(controls[:,i]-u_ref)))
+        opti.subject_to(opti.bounded(x_min_norm - epsilon, states[:,i], x_max_norm + epsilon))
+    objective = objective + epsilon.T @ epsilon *10000
+    opti.minimize(objective)
+
+    # logging list
+    t = np.zeros(Nsim)
+    t0 = 0
+    u_log = np.zeros([n_controls,Nsim])
+    x_log = np.zeros([n_states,Nsim+1])
+    e_log = np.zeros([n_states,Nsim])
+    comp_t_log = np.zeros(Nsim)
+    x_log[:,0] = x0
+    start = time.time()
+    lpv_counter = np.zeros(Nsim,int)
+
+    # set initial values for x
+    x = np.zeros([n_states,Nc+1])
+    u = np.zeros([n_controls,Nc]) # change this to u0 instead of 0 maybe
+    opti.set_initial(states, x)
+    opti.set_initial(controls, u)
+    opti.set_initial(epsilon, [0,0])
+    opti.set_value(x_initial,x0_norm)
+
+    for mpciter in np.arange(Nsim):
+        start_time_iter = time.time()
+        # solve for u and x
+        opti.set_value(reference,[reference_list_normalized[0,mpciter],reference_list_normalized[1,mpciter]])
+
+        # MPC loop
+        while True:
+            # determine A,B
+            for i in np.arange(Nc):
+                opti.set_value(list_A[(n_states*i):(n_states*i+n_states),:],get_A(x[:,i],u[:,i]))
+                opti.set_value(list_B[(n_states*i):(n_states*i+n_states),:],get_B(x[:,i],u[:,i]))
+            
+            # solve for u and x
+            sol = opti.solve()
             u_old = u
             u = np.reshape(sol.value(controls),[n_controls,Nc])
             x = np.reshape(sol.value(states),[n_states,Nc+1]) # this relies on internal simulation in solution, this is x=Ax+Bu
