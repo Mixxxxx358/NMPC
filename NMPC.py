@@ -270,6 +270,7 @@ def NMPC(system, encoder, x_min, x_max, u_min, u_max, x0, u_ref, Q, R, dt, dlam,
     return x_log, u_log, e_log, comp_t_log, t, runtime, lpv_counter, reference_list_normalized, components_times
 
 # no components time implemented
+# not linear yet (just copy of NMPC)
 def NMPC_linear(system, encoder, x_min, x_max, u_min, u_max, x0, u_ref, Q, R, dt, dlam, stages, x_reference_list, Nc=5, Nsim=30, max_iterations=1):
     # declared sym variables
     nx = encoder.nx
@@ -446,6 +447,7 @@ def NMPC_linear(system, encoder, x_min, x_max, u_min, u_max, x0, u_ref, Q, R, dt
     return x_log, u_log, e_log, comp_t_log, t, runtime, lpv_counter, reference_list_normalized
 
 # no components time implemented
+# copy of NMPC with x = f(x,u) instead of x = Ax + Bu
 def NMPC_nonLPV(system, encoder, x_min, x_max, u_min, u_max, x0, u_ref, Q, R, dt, dlam, stages, x_reference_list, Nc=5, Nsim=30, max_iterations=1):
     # declared sym variables
     nx = encoder.nx
@@ -592,6 +594,7 @@ def NMPC_nonLPV(system, encoder, x_min, x_max, u_min, u_max, x0, u_ref, Q, R, dt
     return x_log, u_log, e_log, comp_t_log, t, runtime, lpv_counter, reference_list_normalized
 
 # no components time implemented
+# not finished yet
 def NMPC_output(system, encoder, x_min, x_max, u_min, u_max, x0, u_ref, Q, R, dt, dlam, stages, x_reference_list, Nc=5, Nsim=30, max_iterations=1):
     # declared sym variables
     nx = encoder.nx
@@ -776,7 +779,7 @@ if __name__ == "__main__":
     Nsim = 100
     dlam = 0.2
     stages = 5
-    max_iterations = 10
+    max_iterations = 5
 
     # Weight matrices for the cost function
     Q = np.matrix('1,0;0,100')
