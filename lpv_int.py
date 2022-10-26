@@ -8,22 +8,25 @@ def lpv_int(x,nx,u,nu,Jfx,Jfu,dlam,stages):
     
     A = np.zeros([nx,nx])
     B = np.zeros([nx,nu])
+    #C = np.zeros([ny,nx])
     lam = 0
-    dlam = dlam/stages;
 
-    while lam < 1:
-        for i in np.arange(stages):
-            k1 = Jfx(lam*x,lam*u)
-            j1 = Jfu(lam*x,lam*u)
+    for i in np.arange(stages):
+        k1 = Jfx(lam*x,lam*u)
+        j1 = Jfu(lam*x,lam*u)
+        #l1 = Jhx(lam*x,lam*u)
 
-            k2 = Jfx((lam+dlam/2)*x,(lam+dlam/2)*u)
-            j2 = Jfu((lam+dlam/2)*x,(lam+dlam/2)*u)
+        k2 = Jfx((lam+dlam/2)*x,(lam+dlam/2)*u)
+        j2 = Jfu((lam+dlam/2)*x,(lam+dlam/2)*u)
+        #l2 = Jhx((lam+dlam/2)*x,(lam+dlam/2)*u)
 
-            k4 = Jfx((lam+dlam)*x,(lam+dlam)*u)
-            j4 = Jfu((lam+dlam)*x,(lam+dlam)*u)
+        k4 = Jfx((lam+dlam)*x,(lam+dlam)*u)
+        j4 = Jfu((lam+dlam)*x,(lam+dlam)*u)
+        #l4 = Jhx((lam+dlam)*x,(lam+dlam)*u)
 
-            A = A + 1/6*dlam*(k1 + 4*k2 + k4)
-            B = B + 1/6*dlam*(j1 + 4*j2 + j4)
-            lam = lam + dlam
+        A = A + 1/6*dlam*(k1 + 4*k2 + k4)
+        B = B + 1/6*dlam*(j1 + 4*j2 + j4)
+        #C = C + 1/6*dlam*(l1 + 4*l2 + l4)
+        lam = lam + dlam
             
     return A,B
