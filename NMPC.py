@@ -704,7 +704,7 @@ def par_NMPC_linear(system, encoder, x_min, x_max, u_min, u_max, x0, u_ref, Q, R
     y_reference_list_normalized = reference_list_normalized[1,:]
     C = np.array([[0, 1]])
     x_reference_list_normalized, u_reference_list_normalized, e_reference_list_normalized = getXsUs(y_reference_list_normalized,\
-         nx, nu, 1, Nsim, u_min, u_max, x_min, x_max, get_A, get_B, C, correction, np.zeros(1))
+         nx, nu, 1, Nsim+Nc, u_min, u_max, x_min, x_max, get_A, get_B, C, correction, np.zeros(1)) # fix the Nsim for Xs
     # declare bounds of system
     x_max_norm = (x_max - norm.y0)/norm.ystd
     x_min_norm = (x_min - norm.y0)/norm.ystd
@@ -743,8 +743,8 @@ def par_NMPC_linear(system, encoder, x_min, x_max, u_min, u_max, x0, u_ref, Q, R
 
     for mpciter in range(Nsim):
         start_time_iter = time.time()
-        xs[:] = x_reference_list_normalized[:,mpciter]
-        us[:] = u_reference_list_normalized[:,mpciter]
+        # xs[:] = x_reference_list_normalized[:,mpciter]
+        # us[:] = u_reference_list_normalized[:,mpciter]
         #xs = [-0.01379025,  2.21108199]#[-0.01379025,  2.21108199]
         #us = [3.05924358]#3.05924358
 
@@ -763,20 +763,28 @@ def par_NMPC_linear(system, encoder, x_min, x_max, u_min, u_max, x0, u_ref, Q, R
             Phi = getPhi(list_A, Nc, nx, nu)
             Gamma = getGamma(list_A, list_B, Nc, nx, nu)
             G = 2*(Psi+(Gamma.T@Omega@Gamma))
-            F = 2*(Gamma.T@Omega@Phi)
+            #F = 2*(Gamma.T@Omega@Phi)
+
+            Xs = np.reshape(x_reference_list_normalized[:,mpciter+1:mpciter+Nc+1].T, (2*Nc,1))
+            xs = x_reference_list_normalized[:,:1]
+            Us = u_reference_list_normalized[:,:Nc].T
+            F = 2*(Gamma.T@Omega@(Phi@(x[:2][np.newaxis].T) - Xs) + Psi.T@Us)
+
             L = (M@Gamma) + E
             W = -D - (M@Phi)
 
             Le = np.hstack((L, -np.ones((Nc*2*(nx+nu)+2*nx,1))))
             Ge[:Nc, :Nc] = G
             Ge[Nc:,Nc:] = 10000
-            Fe = np.hstack((F@(x[:2]-xs), np.zeros((ne,ne)))).T
+            #Fe = np.hstack((F@(x[:2]-xs), np.zeros((ne,ne)))).T
+            Fe = np.vstack((F, np.zeros((ne,ne))))
 
             u_old = u
 
             #u = qp.solve_qp(G,(F@(x[:2]-xs)).T,L,(W@(x[:2]-xs)) + c[:,0],solver="osqp") + np.ones(Nc)*us[0]
-            ue = qp.solve_qp(Ge,Fe,Le,(W@(x[:2]-xs)) + c[:,0],solver="osqp")
-            u = ue[:Nc] + np.ones(Nc)*us[0]
+            #ue = qp.solve_qp(Ge,Fe,Le,(W@(x[:2]-xs)) + c[:,0],solver="osqp")
+            ue = qp.solve_qp(Ge,Fe,Le,(W@(x[:2])) + c[:,0],solver="osqp")
+            u = ue[:Nc]# + np.ones(Nc)*us[0]
             e = ue[Nc:]
 
             x[nx:Nc*nx] = ((Phi@x[:2]) + Gamma@u)[:(Nc-1)*nx]
@@ -829,7 +837,7 @@ if __name__ == "__main__":
     # MPC parameters
     dt = 0.1
     Nc = 10
-    Nsim = 500
+    Nsim = 400
     dlam = 0.05
     stages = 20
     max_iterations = 5
