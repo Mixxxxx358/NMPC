@@ -117,6 +117,80 @@ def getABlist(x,u,Nc,nx,nu,Get_A,Get_B, list_A, list_B):
     
     return list_A, list_B
 
+def getXsUs(y_reference_list_normalize, nx, nu, ny, Nsim, u_min, u_max, x_min, x_max, get_A, get_B, C, f0, h0):
+    ne = 1 #number of variables in epsilon
+    Q = np.eye(ny) # add this as variable of function
+    R = np.eye(nu) # add this as variable of function
+    lam = 100
+    
+    In = np.eye(nx)
+    Im = np.eye(nu)
+    Zn = np.zeros((nu,nx))
+    Zm = np.zeros((nx,nu))
+
+    Mi = np.vstack((Zn, Zn, -In, In))
+    Ei = np.vstack((-Im, Im, Zm, Zm))
+    h = np.array([list(itertools.chain([-u_min, u_max], [x*-1 for x in x_min],  x_max))]).T
+
+    T = np.zeros((2*(nx+nu), nx+nu+ne))
+    T[:,:nx] = Mi
+    T[:,nx:nx+nu] = Ei
+    T[:,nx+nu:] = -np.ones((2*(nx+nu),ne))
+
+    b = np.zeros((nx+ny, 1))
+    b[:nx] = f0
+
+    P = np.zeros((nx+nu+ne, nx+nu+ne))
+    P[:nx, :nx] = C.T@Q@C
+    P[nx:nx+nu, nx:nx+nu] = R
+    P[nx+nu:, nx+nu:] = lam
+
+    q = np.zeros((nx+nu+ne,1))
+    
+    xs = np.zeros(nx)
+    us = np.zeros(nu)
+    xue = np.zeros(nx+nu+ne)
+    As = np.zeros((nx,nx))
+    Bs = np.zeros((nx,nu))
+    A = np.zeros((nx+ny, nx+nu+ne))
+    A[nx:nx+ny,:nx] = C #change this to getC from xs us when needed
+
+    x_reference_list_normalized = np.zeros((nx, Nsim))
+    u_reference_list_normalized = np.zeros((nu, Nsim))
+    e_reference_list_normalized = np.zeros((ne, Nsim))
+
+    for j in range(Nsim):
+
+        b[nx:nx+ny] = y_reference_list_normalize[j] - h0 #+ correction_h #add h0 here when needed
+        q[:nx,0] = C.T@Q@(h0 - y_reference_list_normalize[j])
+
+        for i in range(10):
+            As[:,:] = get_A(xs, us)
+            Bs[:,:] = get_B(xs, us)
+
+            A[:nx,:nx] = np.eye(nx) - As
+            A[:nx,nx:nx+nu] = -Bs
+            #A[nx:,:nx] = C
+            #q[:nx,0] = C.T@Q@h0 - C.T@Q@
+
+            #xu[:] = (np.linalg.inv(A)@b)[:,0]
+            xue[:] = (qp.solve_qp(P,q,T,h[:,0],A,b[:,0],solver="osqp"))
+
+            xold = xs
+            uold = us
+            xs = xue[:nx]
+            us = xue[nx:nx+nu]
+            e = xue[nx+nu:]
+
+            if np.linalg.norm(xs-xold) <= 1e-5 and np.linalg.norm(us-uold) <= 1e-5:
+                break
+
+        x_reference_list_normalized[:,j] = xs
+        u_reference_list_normalized[:,j] = us
+        e_reference_list_normalized[:,j] = e
+        
+    return x_reference_list_normalized, u_reference_list_normalized, e_reference_list_normalized
+
 # -------------------------  NMPC functions  ------------------------
 
 def NMPC(system, encoder, x_min, x_max, u_min, u_max, x0, u_ref, Q, R, dt, dlam, stages, x_reference_list, Nc=5, Nsim=30, max_iterations=1):
@@ -612,6 +686,8 @@ def par_NMPC_linear(system, encoder, x_min, x_max, u_min, u_max, x0, u_ref, Q, R
     norm = encoder.norm
     reference_list_normalized = ((x_reference_list.T - norm.y0)/norm.ystd).T
     x0_norm = (x0 - norm.y0)/norm.ystd
+    u0 = 0
+    u0_norm = (u0 - norm.u0)/norm.ustd
 
     # determine getA and getB functions
     Jfx = Function("Jfx", [x, u], [jacobian(rhs_c,x)])
@@ -625,6 +701,10 @@ def par_NMPC_linear(system, encoder, x_min, x_max, u_min, u_max, x0, u_ref, Q, R
     Get_A = get_A.map(Nc, "thread", 32)
     Get_B = get_B.map(Nc, "thread", 32)
 
+    y_reference_list_normalized = reference_list_normalized[1,:]
+    C = np.array([[0, 1]])
+    x_reference_list_normalized, u_reference_list_normalized, e_reference_list_normalized = getXsUs(y_reference_list_normalized,\
+         nx, nu, 1, Nsim, u_min, u_max, x_min, x_max, get_A, get_B, C, correction, np.zeros(1))
     # declare bounds of system
     x_max_norm = (x_max - norm.y0)/norm.ystd
     x_min_norm = (x_min - norm.y0)/norm.ystd
@@ -647,7 +727,10 @@ def par_NMPC_linear(system, encoder, x_min, x_max, u_min, u_max, x0, u_ref, Q, R
 
     # set initial values for x
     x = np.tile(x0_norm, Nc)
-    u = np.zeros(Nc*nu)
+    u = np.tile(u0_norm, Nc)
+    #u = np.zeros(Nc*nu)
+    xs = np.zeros(nx)
+    us = np.zeros(nu)
 
     list_A = np.zeros([Nc*nx, nx])
     list_B = np.zeros([Nc*nx, nu])
@@ -655,9 +738,16 @@ def par_NMPC_linear(system, encoder, x_min, x_max, u_min, u_max, x0, u_ref, Q, R
     Omega = getPsi(Nc, Q)
     D, E, M, c = getDEMc(x_min_norm, x_max_norm, u_min_norm, u_max_norm, Nc, nx, nu)
 
+    ne = 1
+    Ge = np.zeros((Nc+ne, Nc+ne))
+
     for mpciter in range(Nsim):
         start_time_iter = time.time()
-        
+        xs[:] = x_reference_list_normalized[:,mpciter]
+        us[:] = u_reference_list_normalized[:,mpciter]
+        #xs = [-0.01379025,  2.21108199]#[-0.01379025,  2.21108199]
+        #us = [3.05924358]#3.05924358
+
         while True:
             component_start = time.time()
             list_A, list_B = getABlist(x,u,Nc,nx,nu,Get_A,Get_B, list_A, list_B)
@@ -677,14 +767,18 @@ def par_NMPC_linear(system, encoder, x_min, x_max, u_min, u_max, x0, u_ref, Q, R
             L = (M@Gamma) + E
             W = -D - (M@Phi)
 
+            Le = np.hstack((L, -np.ones((Nc*2*(nx+nu)+2*nx,1))))
+            Ge[:Nc, :Nc] = G
+            Ge[Nc:,Nc:] = 10000
+            Fe = np.hstack((F@(x[:2]-xs), np.zeros((ne,ne)))).T
+
             u_old = u
 
-            x_ss = [0, 0]
-            #u[:] = (-np.linalg.inv(G)@F@(x[:2]-x_ss))
-            #print(u)
-            #print(qp.solve_qp(G,(F@(x[:2]-x_ss)).T,L,(W@x[:2]) + c[:,0],solver="osqp"))
-            u = qp.solve_qp(G,(F@(x[:2]-x_ss)).T,L,(W@x[:2]) + c[:,0],solver="osqp")
-            
+            #u = qp.solve_qp(G,(F@(x[:2]-xs)).T,L,(W@(x[:2]-xs)) + c[:,0],solver="osqp") + np.ones(Nc)*us[0]
+            ue = qp.solve_qp(Ge,Fe,Le,(W@(x[:2]-xs)) + c[:,0],solver="osqp")
+            u = ue[:Nc] + np.ones(Nc)*us[0]
+            e = ue[Nc:]
+
             x[nx:Nc*nx] = ((Phi@x[:2]) + Gamma@u)[:(Nc-1)*nx]
             
             lpv_counter[mpciter] += 1
@@ -715,6 +809,7 @@ def par_NMPC_linear(system, encoder, x_min, x_max, u_min, u_max, x0, u_ref, Q, R
 
         x_log[(mpciter+1)*nx:(mpciter+2)*nx] = x_measured
         u_log[mpciter] = u_denormalized
+        e_log[0,mpciter] = e
         
         x = np.hstack((x[nx:(Nc+1)*nx],x[-2:]))
         x[:nx] = x0_norm
@@ -733,10 +828,10 @@ def par_NMPC_linear(system, encoder, x_min, x_max, u_min, u_max, x0, u_ref, Q, R
 if __name__ == "__main__":
     # MPC parameters
     dt = 0.1
-    Nc = 5
-    Nsim = 20
-    dlam = 0.02
-    stages = 50
+    Nc = 10
+    Nsim = 500
+    dlam = 0.05
+    stages = 20
     max_iterations = 5
 
     # Weight matrices for the cost function
@@ -852,8 +947,8 @@ if __name__ == "__main__":
     # plt.xticks([1, 2, 3],  ['solve', 'overhead', 'sim'])
 
     plt.grid(axis='y')
-    #plt.show()
+    plt.show()
 
     fig3 = plt.figure(figsize=[10.0, 10.0])#['getAB', 'solve', 'overhead', 'sim']
     plt.bar(['getAB', 'solve', 'overhead', 'sim'], np.sum(components_time, axis=1))
-    #plt.show()
+    plt.show()
