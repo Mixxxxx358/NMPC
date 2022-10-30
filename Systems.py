@@ -57,7 +57,7 @@ class UnbalancedDisc(deepSI.System_deriv):
         return x
 
 class NoisyUnbalancedDisc(deepSI.System_deriv):
-    def __init__(self, dt=0.025, sigma_n=[1, 0.1]):
+    def __init__(self, dt=0.025, sigma_n=[0, 0]):
         super(NoisyUnbalancedDisc, self).__init__(nx=2, dt=dt)
         self.g = 9.80155078791343
         self.J = 0.000244210523960356
@@ -74,7 +74,7 @@ class NoisyUnbalancedDisc(deepSI.System_deriv):
         return [dz1,dz2]
 
     def h(self,x,u):
-        return x #+ np.hstack((np.random.normal(0, self.sigma_n[0], 1), np.random.normal(0, self.sigma_n[1], 1)))
+        return x + np.hstack((np.random.normal(0, self.sigma_n[0], 1), np.random.normal(0, self.sigma_n[1], 1)))
         #return x[0], (x[1] + np.pi)%2.0*np.pi - np.pi
 
 class DiscreteUnbalancedDisc(deepSI.System_ss):

@@ -730,9 +730,7 @@ if __name__ == "__main__":
 
     # Initialize system and load corresponding encoder
     sys_unblanced = Systems.NoisyUnbalancedDisc(dt=dt, sigma_n=[0.47, 0.044])
-    #sys_unblanced = Systems.DiscreteUnbalancedDisc(dt=dt)
     I_enc = deepSI.load_system("systems/UnbalancedDisk_dt01_e100_SNR_100")
-    #I_enc = deepSI.load_system("systems/DiscreteUnbalancedDisk_dt01_e600")
 
     nx = I_enc.nx
     nu = I_enc.nu if I_enc.nu is not None else 1
@@ -742,8 +740,8 @@ if __name__ == "__main__":
         x_reference_list=x_reference_list, Nc=Nc, Nsim=Nsim, max_iterations=max_iterations)
 
     print("Runtime:" + str(runtime))
-    #print(x_reference_list.shape)
-    #print(reference_list_normalized.shape)
+
+# ------------------------------  Plots  -------------------------------
 
     fig1 = plt.figure(figsize=[14.0, 3.0])
 
@@ -811,14 +809,9 @@ if __name__ == "__main__":
     data2 = np.trim_zeros(components_time[1,:])
     data3 = np.trim_zeros(components_time[2,:])
     data4 = np.trim_zeros(components_time[3,:])
-
     data = [data1, data2, data3, data4]
     plt.boxplot(data)
     plt.xticks([1, 2, 3, 4],  ['getAB', 'solve', 'overhead', 'sim'])
-    # data = [data2, data3, data4]
-    # plt.boxplot(data)
-    # plt.xticks([1, 2, 3],  ['solve', 'overhead', 'sim'])
-
     plt.grid(axis='y')
     plt.show()
 
