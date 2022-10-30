@@ -54,6 +54,57 @@ def CasADiExp(ss_enc, x, u):
 
     return nn_NL + nn_Lin
 
+def CasADiHn(ss_enc, x):
+    n_hidden_layers = ss_enc.h_n_hidden_layers
+
+    params = {}
+    for name, param in ss_enc.hn.named_parameters():
+        params[name] = param.detach().numpy()
+    params_list = list(params.values())
+
+    temp_nn = x
+    for i in range(n_hidden_layers):
+        W_NL = params_list[2+i*2]
+        b_NL = params_list[3+i*2]
+        temp_nn = mtimes(W_NL, temp_nn)+b_NL
+        temp_nn = tanh(temp_nn)
+    W_NL = params_list[2+n_hidden_layers*2]
+    b_NL = params_list[3+n_hidden_layers*2]
+    nn_NL = mtimes(W_NL, temp_nn)+b_NL
+
+    W_Lin = params_list[0]
+    b_Lin = params_list[1]
+    nn_Lin = mtimes(W_Lin,x) + b_Lin
+
+    return nn_NL + nn_Lin
+
+def CasADiFn(ss_enc, x, u):
+    n_hidden_layers = ss_enc.f_n_hidden_layers
+    nu = ss_enc.nu if ss_enc.nu is not None else 1
+
+    params = {}
+    for name, param in ss_enc.fn.named_parameters():
+        params[name] = param.detach().numpy()
+    params_list = list(params.values())
+    
+    xu = vertcat(x,u)
+
+    temp_nn = xu
+    for i in range(n_hidden_layers):
+        W_NL = params_list[2+i*2]
+        b_NL = params_list[3+i*2]
+        temp_nn = mtimes(W_NL, temp_nn)+b_NL
+        temp_nn = tanh(temp_nn)
+    W_NL = params_list[2+n_hidden_layers*2]
+    b_NL = params_list[3+n_hidden_layers*2]
+    nn_NL = mtimes(W_NL, temp_nn)+b_NL
+
+    W_Lin = params_list[0]
+    b_Lin = params_list[1]
+    nn_Lin = mtimes(W_Lin,xu) + b_Lin
+
+    return nn_NL + nn_Lin
+
 # -------------------------  NMPC functions  ------------------------
 
 def NMPC(system, encoder, x_min, x_max, u_min, u_max, x0, u_ref, Q, R, dt, dlam, stages, x_reference_list, Nc=5, Nsim=30, max_iterations=1):
@@ -555,9 +606,7 @@ def par_NMPC_linear(system, encoder, x_min, x_max, u_min, u_max, x0, u_ref, Q, R
     # determine getA and getB functions
     Jfx = Function("Jfx", [x, u], [jacobian(rhs_c,x)])
     Jfu = Function("Jfu", [x, u], [jacobian(rhs_c,u)])
-    # Jhx = Function("Jhx", [x, u], [jacobian(y_rhs_c,x)])
-    # Jhu = Function("Jhu", [x, u], [jacobian(y_rhs_c,u)])
-    
+
     [A_sym, B_sym] = lpv_int(x,n_states,u,n_controls,Jfx,Jfu,dlam,stages)
     get_A = Function("get_A",[x,u],[A_sym])
     get_B = Function("get_B",[x,u],[B_sym])
@@ -568,10 +617,10 @@ def par_NMPC_linear(system, encoder, x_min, x_max, u_min, u_max, x0, u_ref, Q, R
     C = np.array([[0, 1]])
     x_reference_list_normalized, u_reference_list_normalized, e_reference_list_normalized = getXsUs(y_reference_list_normalized,\
          nx, nu, 1, Nsim+Nc, u_min, u_max, x_min, x_max, get_A, get_B, C, correction, np.zeros(1)) # fix the Nsim for Xs
+    
     # declare bounds of system
     x_max_norm = (x_max - norm.y0)/norm.ystd
     x_min_norm = (x_min - norm.y0)/norm.ystd
-    #opti.subject_to(opti.bounded(x_min_norm,states,x_max_norm))
     u_min_norm = (u_min - norm.u0)/norm.ustd
     u_max_norm = (u_max - norm.u0)/norm.ustd
 
@@ -585,15 +634,11 @@ def par_NMPC_linear(system, encoder, x_min, x_max, u_min, u_max, x0, u_ref, Q, R
     comp_t_log = np.zeros(Nsim)
     start = time.time()
     lpv_counter = np.zeros(Nsim,int)
-    components_total_time = np.zeros(4) # getAB, solve, overhead, sim
     components_time = np.zeros((4, Nsim*max_iterations))
 
     # set initial values for x
     x = np.tile(x0_norm, Nc)
     u = np.tile(u0_norm, Nc)
-    #u = np.zeros(Nc*nu)
-    xs = np.zeros(nx)
-    us = np.zeros(nu)
 
     list_A = np.zeros([Nc*nx, nx])
     list_B = np.zeros([Nc*nx, nu])
@@ -606,48 +651,31 @@ def par_NMPC_linear(system, encoder, x_min, x_max, u_min, u_max, x0, u_ref, Q, R
 
     for mpciter in range(Nsim):
         start_time_iter = time.time()
-        # xs[:] = x_reference_list_normalized[:,mpciter]
-        # us[:] = u_reference_list_normalized[:,mpciter]
-        #xs = [-0.01379025,  2.21108199]#[-0.01379025,  2.21108199]
-        #us = [3.05924358]#3.05924358
+        Xs = np.reshape(x_reference_list_normalized[:,mpciter+1:mpciter+Nc+1].T, (2*Nc,1))
+        Us = u_reference_list_normalized[:,:Nc].T
 
         while True:
             component_start = time.time()
             list_A, list_B = getABlist(x,u,Nc,nx,nu,Get_A,Get_B, list_A, list_B)
-            # pA = Get_A(np.vstack(np.split(x,Nc)).T,u)
-            # for i in range(Nc):
-            #     list_A[(n_states*i):(n_states*i+n_states),:] = pA[:,i*nx:(i+1)*nx]
-            # pB = Get_B(np.vstack(np.split(x,Nc)).T,u)
-            # for i in range(Nc):
-            #     list_B[(n_states*i):(n_states*i+n_states),:] = pB[:,i*nu:(i+1)*nu]
             components_time[0, mpciter + lpv_counter[mpciter]] = components_time[0, mpciter + lpv_counter[mpciter]] + time.time() - component_start
             
             component_start = time.time()
             Phi = getPhi(list_A, Nc, nx, nu)
             Gamma = getGamma(list_A, list_B, Nc, nx, nu)
             G = 2*(Psi+(Gamma.T@Omega@Gamma))
-            #F = 2*(Gamma.T@Omega@Phi)
-
-            Xs = np.reshape(x_reference_list_normalized[:,mpciter+1:mpciter+Nc+1].T, (2*Nc,1))
-            xs = x_reference_list_normalized[:,:1]
-            Us = u_reference_list_normalized[:,:Nc].T
             F = 2*(Gamma.T@Omega@(Phi@(x[:2][np.newaxis].T) - Xs) + Psi.T@Us)
-
             L = (M@Gamma) + E
             W = -D - (M@Phi)
 
             Le = np.hstack((L, -np.ones((Nc*2*(nx+nu)+2*nx,1))))
             Ge[:Nc, :Nc] = G
             Ge[Nc:,Nc:] = 10000
-            #Fe = np.hstack((F@(x[:2]-xs), np.zeros((ne,ne)))).T
             Fe = np.vstack((F, np.zeros((ne,ne))))
 
             u_old = u
 
-            #u = qp.solve_qp(G,(F@(x[:2]-xs)).T,L,(W@(x[:2]-xs)) + c[:,0],solver="osqp") + np.ones(Nc)*us[0]
-            #ue = qp.solve_qp(Ge,Fe,Le,(W@(x[:2]-xs)) + c[:,0],solver="osqp")
             ue = qp.solve_qp(Ge,Fe,Le,(W@(x[:2])) + c[:,0],solver="osqp")
-            u = ue[:Nc]# + np.ones(Nc)*us[0]
+            u = ue[:Nc]
             e = ue[Nc:]
 
             x[nx:Nc*nx] = ((Phi@x[:2]) + Gamma@u)[:(Nc-1)*nx]
@@ -656,7 +684,7 @@ def par_NMPC_linear(system, encoder, x_min, x_max, u_min, u_max, x0, u_ref, Q, R
             if (lpv_counter[mpciter] >= max_iterations) or (np.linalg.norm(u-u_old) < 1e-5):
                 components_time[1, mpciter + lpv_counter[mpciter]-1] = components_time[1, mpciter + lpv_counter[mpciter]-1] + time.time() - component_start
                 break
-            components_time[1, mpciter + lpv_counter[mpciter]] = components_time[1, mpciter + lpv_counter[mpciter]] + time.time() - component_start
+            components_time[1, mpciter + lpv_counter[mpciter]-1] = components_time[1, mpciter + lpv_counter[mpciter]-1] + time.time() - component_start
 
         print("MPC iteration: ", mpciter+1)
         print("LPV counter: ", lpv_counter[mpciter])
@@ -696,12 +724,165 @@ def par_NMPC_linear(system, encoder, x_min, x_max, u_min, u_max, x0, u_ref, Q, R
 
     return x_log, u_log, e_log, comp_t_log, t, runtime, lpv_counter, reference_list_normalized, components_time
 
+def output_NMPC_linear(system, encoder, x_min, x_max, u_min, u_max, x0, u_ref, Q, R, dt, dlam, stages, x_reference_list, Nc=5, Nsim=30, max_iterations=1):
+    # declared sym variables
+    nx = encoder.nx
+    n_states = nx
+    x = MX.sym("x",nx,1)
+    nu = encoder.nu if I_enc.nu is not None else 1
+    n_controls = nu
+    u = MX.sym("u",nu,1)
+    ny = I_enc.ny if I_enc.ny is not None else 1
+
+    # convert torch nn to casadi function
+    rhs = CasADiFn(I_enc, x, u)
+    f = Function('f', [x, u], [rhs])
+    y_rhs = CasADiHn(I_enc, x)
+    h = Function('h', [x], [y_rhs])
+
+    correction = f([0,0], 0)
+    rhs_c = rhs - correction
+    correction_h = h([0,0])
+    y_rhs_c = y_rhs - correction_h
+
+    # normalize reference list
+    norm = encoder.norm
+    reference_list_normalized = ((x_reference_list.T - norm.y0)/norm.ystd).T
+    x0_norm = (x0 - norm.y0)/norm.ystd
+    u0 = 0
+    u0_norm = (u0 - norm.u0)/norm.ustd
+
+    # determine getA and getB functions
+    Jfx = Function("Jfx", [x, u], [jacobian(rhs_c,x)])
+    Jfu = Function("Jfu", [x, u], [jacobian(rhs_c,u)])
+    Jhx = Function("Jhx", [x, u], [jacobian(y_rhs_c,x)])
+    # Jhu = Function("Jhu", [x, u], [jacobian(y_rhs_c,u)])
+    
+    [A_sym, B_sym, C_sym] = lpv_int_C(x,nx,u,nu,ny,Jfx,Jfu,Jhx,dlam,stages)
+    get_A = Function("get_A",[x,u],[A_sym])
+    get_B = Function("get_B",[x,u],[B_sym])
+    get_C = Function("get_C",[x,u],[C_sym])
+    Get_A = get_A.map(Nc, "thread", 32)
+    Get_B = get_B.map(Nc, "thread", 32)
+
+    y_reference_list_normalized = reference_list_normalized[1,:]
+    C = np.array([[0, 1]])
+    x_reference_list_normalized, u_reference_list_normalized, e_reference_list_normalized = getXsUs_Cs(y_reference_list_normalized,\
+         nx, nu, 1, Nsim+Nc, u_min, u_max, x_min, x_max, get_A, get_B, C, correction, np.zeros(1)) # fix the Nsim for Xs
+    
+    # declare bounds of system
+    x_max_norm = (x_max - norm.y0)/norm.ystd
+    x_min_norm = (x_min - norm.y0)/norm.ystd
+    u_min_norm = (u_min - norm.u0)/norm.ustd
+    u_max_norm = (u_max - norm.u0)/norm.ustd
+
+    # logging list
+    u_log = np.zeros(Nsim*n_controls)
+    x_log = np.zeros((Nsim+1)*n_states)
+    x_log[:nx] = x0
+    e_log = np.zeros([n_states,Nsim])
+    t = np.zeros(Nsim)
+    t0 = 0
+    comp_t_log = np.zeros(Nsim)
+    start = time.time()
+    lpv_counter = np.zeros(Nsim,int)
+    components_time = np.zeros((4, Nsim*max_iterations))
+
+    # set initial values for x
+    x = np.tile(x0_norm, Nc)
+    u = np.tile(u0_norm, Nc)
+
+    list_A = np.zeros([Nc*nx, nx])
+    list_B = np.zeros([Nc*nx, nu])
+    Psi = getPsi(Nc, R)
+    Omega = getPsi(Nc, Q)
+    D, E, M, c = getDEMc(x_min_norm, x_max_norm, u_min_norm, u_max_norm, Nc, nx, nu)
+
+    ne = 1
+    Ge = np.zeros((Nc+ne, Nc+ne))
+
+    for mpciter in range(Nsim):
+        start_time_iter = time.time()
+        Xs = np.reshape(x_reference_list_normalized[:,mpciter+1:mpciter+Nc+1].T, (2*Nc,1))
+        Us = u_reference_list_normalized[:,:Nc].T
+
+        while True:
+            component_start = time.time()
+            list_A, list_B = getABlist(x,u,Nc,nx,nu,Get_A,Get_B, list_A, list_B)
+            components_time[0, mpciter + lpv_counter[mpciter]] = components_time[0, mpciter + lpv_counter[mpciter]] + time.time() - component_start
+            
+            component_start = time.time()
+            Phi = getPhi(list_A, Nc, nx, nu)
+            Gamma = getGamma(list_A, list_B, Nc, nx, nu)
+            G = 2*(Psi+(Gamma.T@Omega@Gamma))
+            F = 2*(Gamma.T@Omega@(Phi@(x[:2][np.newaxis].T) - Xs) + Psi.T@Us)
+            L = (M@Gamma) + E
+            W = -D - (M@Phi)
+
+            Le = np.hstack((L, -np.ones((Nc*2*(nx+nu)+2*nx,1))))
+            Ge[:Nc, :Nc] = G
+            Ge[Nc:,Nc:] = 10000
+            Fe = np.vstack((F, np.zeros((ne,ne))))
+
+            u_old = u
+
+            ue = qp.solve_qp(Ge,Fe,Le,(W@(x[:2])) + c[:,0],solver="osqp")
+            u = ue[:Nc]
+            e = ue[Nc:]
+
+            x[nx:Nc*nx] = ((Phi@x[:2]) + Gamma@u)[:(Nc-1)*nx]
+            
+            lpv_counter[mpciter] += 1
+            if (lpv_counter[mpciter] >= max_iterations) or (np.linalg.norm(u-u_old) < 1e-5):
+                components_time[1, mpciter + lpv_counter[mpciter]-1] = components_time[1, mpciter + lpv_counter[mpciter]-1] + time.time() - component_start
+                break
+            components_time[1, mpciter + lpv_counter[mpciter]-1] = components_time[1, mpciter + lpv_counter[mpciter]-1] + time.time() - component_start
+
+        print("MPC iteration: ", mpciter+1)
+        print("LPV counter: ", lpv_counter[mpciter])
+        
+        component_start = time.time()
+        t[mpciter] = t0
+        t0 = t0 + dt
+        
+        # denormalize x and u
+        x_denormalized = norm.ystd*x0_norm + norm.y0
+        u_denormalized = norm.ustd*u[0] + norm.u0
+        components_time[2, mpciter + lpv_counter[mpciter]-1] = components_time[2, mpciter + lpv_counter[mpciter]-1] + time.time() - component_start
+
+        # make system step and normalize
+        component_start = time.time()
+        x_denormalized = system.f(x_denormalized, u_denormalized)
+        x_measured = system.h(x_denormalized, u_denormalized)
+        components_time[3, mpciter + lpv_counter[mpciter]-1] = components_time[3, mpciter + lpv_counter[mpciter]-1] + time.time() - component_start
+        component_start = time.time()
+        x0_norm = (x_measured - norm.y0)/norm.ystd
+
+        x_log[(mpciter+1)*nx:(mpciter+2)*nx] = x_measured
+        u_log[mpciter] = u_denormalized
+        e_log[0,mpciter] = e
+        
+        x = np.hstack((x[nx:(Nc+1)*nx],x[-2:]))
+        x[:nx] = x0_norm
+        u = np.hstack((u[nx:Nc*nx],u[-2:]))
+
+        # finished mpc time measurement
+        end_time_iter = time.time()
+        comp_t_log[mpciter] = end_time_iter - start_time_iter
+        components_time[2, mpciter + lpv_counter[mpciter]-1] = components_time[2, mpciter + lpv_counter[mpciter]-1] + time.time() - component_start
+
+    end = time.time()
+    runtime = end - start
+
+    return x_log, u_log, e_log, comp_t_log, t, runtime, lpv_counter, reference_list_normalized, components_time
+
+
 # -------------------------  Main function  -------------------------
 
 if __name__ == "__main__":
     # MPC parameters
     dt = 0.1
-    Nc = 10
+    Nc = 5
     Nsim = 400
     dlam = 0.05
     stages = 20
@@ -722,18 +903,18 @@ if __name__ == "__main__":
     u_ref = 0
 
     # determine state references
-    x_reference_list = np.load("references/randomLevelTime5_10Range-1_1Nsim500.npy")
+    x_reference_list = np.load("references/randomLevelTime15_20Range-1_1Nsim500.npy")
 
     # Weight matrices for the cost function
     Q = np.matrix('1,0;0,100')
     R = 1
 
     # Initialize system and load corresponding encoder
-    sys_unblanced = Systems.NoisyUnbalancedDisc(dt=dt, sigma_n=[0.47, 0.044])
+    sys_unblanced = Systems.NoisyUnbalancedDisc(dt=dt, sigma_n=[0, 0])
     I_enc = deepSI.load_system("systems/UnbalancedDisk_dt01_e100_SNR_100")
-
-    nx = I_enc.nx
-    nu = I_enc.nu if I_enc.nu is not None else 1
+    
+    #sys_unblanced = Systems.OutputUnbalancedDisc(dt=dt, sigma_n=[0, 0])
+    #I_enc = deepSI.load_system("systems/OutputUnbalancedDisk_dt01_e300")
 
     x_log, u_log, e_log, comp_t_log, t, runtime, lpv_counter, reference_list_normalized, components_time = par_NMPC_linear(sys_unblanced, I_enc, \
         x_min=x_min, x_max= x_max, u_min=u_min, u_max=u_max, x0=x0, u_ref=u_ref, Q=Q, R=R, dt=dt, dlam=dlam, stages=stages, \
@@ -742,6 +923,9 @@ if __name__ == "__main__":
     print("Runtime:" + str(runtime))
 
 # ------------------------------  Plots  -------------------------------
+
+    nx = I_enc.nx
+    nu = I_enc.nu if I_enc.nu is not None else 1
 
     fig1 = plt.figure(figsize=[14.0, 3.0])
 
@@ -813,8 +997,12 @@ if __name__ == "__main__":
     plt.boxplot(data)
     plt.xticks([1, 2, 3, 4],  ['getAB', 'solve', 'overhead', 'sim'])
     plt.grid(axis='y')
+    plt.ylabel("time [s]")
+    plt.xlabel("components")
     plt.show()
 
     fig3 = plt.figure(figsize=[10.0, 10.0])#['getAB', 'solve', 'overhead', 'sim']
     plt.bar(['getAB', 'solve', 'overhead', 'sim'], np.sum(components_time, axis=1))
+    plt.ylabel("time [s]")
+    plt.xlabel("components")
     plt.show()
