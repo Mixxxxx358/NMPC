@@ -882,7 +882,7 @@ def output_NMPC_linear(system, encoder, x_min, x_max, u_min, u_max, x0, u_ref, Q
 if __name__ == "__main__":
     # MPC parameters
     dt = 0.1
-    Nc = 5
+    Nc = 10
     Nsim = 400
     dlam = 0.05
     stages = 20
@@ -903,14 +903,14 @@ if __name__ == "__main__":
     u_ref = 0
 
     # determine state references
-    x_reference_list = np.load("references/randomLevelTime15_20Range-1_1Nsim500.npy")
+    x_reference_list = np.load("references/randomLevelTime5_10Range-1_1Nsim500.npy")
 
     # Weight matrices for the cost function
     Q = np.matrix('1,0;0,100')
     R = 1
 
     # Initialize system and load corresponding encoder
-    sys_unblanced = Systems.NoisyUnbalancedDisc(dt=dt, sigma_n=[0, 0])
+    sys_unblanced = Systems.NoisyUnbalancedDisc(dt=dt, sigma_n=[0.47, 0.044])
     I_enc = deepSI.load_system("systems/UnbalancedDisk_dt01_e100_SNR_100")
     
     #sys_unblanced = Systems.OutputUnbalancedDisc(dt=dt, sigma_n=[0, 0])
