@@ -138,9 +138,9 @@ def getXsUs(y_reference_list_normalize, nx, nu, ny, Nsim, u_min, u_max, x_min, x
         
     return x_reference_list_normalized, u_reference_list_normalized, e_reference_list_normalized
 
-def getXsUs_Cs(y_reference_list_normalize, nx, nu, ny, Nsim, u_min, u_max, x_min, x_max, get_A, get_B, get_C, C, f0, h0):
+def getXsUs_Cs(y_reference_list_normalize, nx, nu, ny, Nsim, u_min, u_max, x_min, x_max, get_A, get_B, get_C, f0, h0):
     ne = 1 #number of variables in epsilon
-    Q = np.eye(ny) # add this as variable of function
+    Q = 100*np.eye(ny) # add this as variable of function
     R = np.eye(nu) # add this as variable of function
     lam = 1000
     
@@ -182,12 +182,13 @@ def getXsUs_Cs(y_reference_list_normalize, nx, nu, ny, Nsim, u_min, u_max, x_min
     u_reference_list_normalized = np.zeros((nu, Nsim))
     e_reference_list_normalized = np.zeros((ne, Nsim))
 
+
     for j in range(Nsim):
 
         b[nx:nx+ny] = y_reference_list_normalize[j] - h0 #+ correction_h #add h0 here when needed
-        q[:nx,0] = C.T@Q@(h0 - y_reference_list_normalize[j])
+        #q[:nx,0] = C.T@Q@(h0 - y_reference_list_normalize[j])
 
-        for i in range(20):
+        for i in range(1000):
             As[:,:] = get_A(xs, us)
             Bs[:,:] = get_B(xs, us)
             Cs[:,:] = get_C(xs, us)
@@ -215,3 +216,14 @@ def getXsUs_Cs(y_reference_list_normalize, nx, nu, ny, Nsim, u_min, u_max, x_min
         e_reference_list_normalized[:,j] = e
         
     return x_reference_list_normalized, u_reference_list_normalized, e_reference_list_normalized
+
+def getF0(list_A, f0, Nc, nx):
+    F0 = np.zeros([nx*Nc, nx])
+    for i in range(Nc):
+        for j in range(i+1):
+            temp = np.eye(2)
+            for l in range(j):
+                #print(str(i) + ", " + str(j) + ", " + str(l))
+                temp = np.matmul(list_A[(nx*l):(nx*l+nx),:], temp)
+            F0[i*nx:(i+1)*nx, :] = F0[i*nx:(i+1)*nx, :] + temp
+    return F0@f0

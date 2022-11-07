@@ -12,6 +12,7 @@ from lpv_int import *
 from par_lpv_int import *
 from lpv_rk4 import *
 from mpcUtil import *
+import torch
 
 # -------------------------  Util functions  -------------------------
 
@@ -55,7 +56,7 @@ def CasADiExp(ss_enc, x, u):
     return nn_NL + nn_Lin
 
 def CasADiHn(ss_enc, x):
-    n_hidden_layers = ss_enc.h_n_hidden_layers
+    n_hidden_layers = 2#ss_enc.h_n_hidden_layers
 
     params = {}
     for name, param in ss_enc.hn.named_parameters():
@@ -79,7 +80,7 @@ def CasADiHn(ss_enc, x):
     return nn_NL + nn_Lin
 
 def CasADiFn(ss_enc, x, u):
-    n_hidden_layers = ss_enc.f_n_hidden_layers
+    n_hidden_layers = 2#ss_enc.f_n_hidden_layers
     nu = ss_enc.nu if ss_enc.nu is not None else 1
 
     params = {}
@@ -649,6 +650,8 @@ def par_NMPC_linear(system, encoder, x_min, x_max, u_min, u_max, x0, u_ref, Q, R
     ne = 1
     Ge = np.zeros((Nc+ne, Nc+ne))
 
+    system.reset_state()
+
     for mpciter in range(Nsim):
         start_time_iter = time.time()
         Xs = np.reshape(x_reference_list_normalized[:,mpciter+1:mpciter+Nc+1].T, (2*Nc,1))
@@ -700,8 +703,8 @@ def par_NMPC_linear(system, encoder, x_min, x_max, u_min, u_max, x0, u_ref, Q, R
 
         # make system step and normalize
         component_start = time.time()
-        x_denormalized = system.f(x_denormalized, u_denormalized)
-        x_measured = system.h(x_denormalized, u_denormalized)
+        system.x = system.f(system.x, u_denormalized)
+        x_measured = system.h(system.x, u_denormalized)
         components_time[3, mpciter + lpv_counter[mpciter]-1] = components_time[3, mpciter + lpv_counter[mpciter]-1] + time.time() - component_start
         component_start = time.time()
         x0_norm = (x_measured - norm.y0)/norm.ystd
@@ -766,9 +769,9 @@ def output_NMPC_linear(system, encoder, x_min, x_max, u_min, u_max, x0, u_ref, Q
     Get_B = get_B.map(Nc, "thread", 32)
 
     y_reference_list_normalized = reference_list_normalized[1,:]
-    C = np.array([[0, 1]])
+    #C = np.array([[0, 1]])
     x_reference_list_normalized, u_reference_list_normalized, e_reference_list_normalized = getXsUs_Cs(y_reference_list_normalized,\
-         nx, nu, 1, Nsim+Nc, u_min, u_max, x_min, x_max, get_A, get_B, C, correction, np.zeros(1)) # fix the Nsim for Xs
+         nx, nu, 1, Nsim+Nc, u_min, u_max, x_min, x_max, get_A, get_B, get_C, correction, np.array(correction_h)[:,0]) # fix the Nsim for Xs
     
     # declare bounds of system
     x_max_norm = (x_max - norm.y0)/norm.ystd
@@ -780,6 +783,8 @@ def output_NMPC_linear(system, encoder, x_min, x_max, u_min, u_max, x0, u_ref, Q
     u_log = np.zeros(Nsim*n_controls)
     x_log = np.zeros((Nsim+1)*n_states)
     x_log[:nx] = x0
+    y_log = np.zeros((Nsim+1))
+    y_est_log = np.zeros((Nsim+1)*ny)
     e_log = np.zeros([n_states,Nsim])
     t = np.zeros(Nsim)
     t0 = 0
@@ -801,10 +806,20 @@ def output_NMPC_linear(system, encoder, x_min, x_max, u_min, u_max, x0, u_ref, Q
     ne = 1
     Ge = np.zeros((Nc+ne, Nc+ne))
 
+    # Observer variables
+    nb = 4
+    uhist = torch.zeros((1,nb))#torch.tensor([[0,0]],dtype=torch.float32)
+    na = 4
+    yhist = torch.zeros((1,na+1))#torch.tensor([[0,0,0]],dtype=torch.float32)
+
+    f0 = np.array(correction.elements())[np.newaxis].T
+
+    system.reset_state()
+
     for mpciter in range(Nsim):
         start_time_iter = time.time()
         Xs = np.reshape(x_reference_list_normalized[:,mpciter+1:mpciter+Nc+1].T, (2*Nc,1))
-        Us = u_reference_list_normalized[:,:Nc].T
+        Us = u_reference_list_normalized[:,mpciter:mpciter+Nc].T
 
         while True:
             component_start = time.time()
@@ -812,10 +827,11 @@ def output_NMPC_linear(system, encoder, x_min, x_max, u_min, u_max, x0, u_ref, Q
             components_time[0, mpciter + lpv_counter[mpciter]] = components_time[0, mpciter + lpv_counter[mpciter]] + time.time() - component_start
             
             component_start = time.time()
+            F0 = getF0(list_A, f0, Nc, nx)
             Phi = getPhi(list_A, Nc, nx, nu)
             Gamma = getGamma(list_A, list_B, Nc, nx, nu)
             G = 2*(Psi+(Gamma.T@Omega@Gamma))
-            F = 2*(Gamma.T@Omega@(Phi@(x[:2][np.newaxis].T) - Xs) + Psi.T@Us)
+            F = 2*(Gamma.T@Omega@(Phi@(x[:2][np.newaxis].T) - Xs) - Psi@Us + Gamma.T@Omega@F0)
             L = (M@Gamma) + E
             W = -D - (M@Phi)
 
@@ -827,10 +843,10 @@ def output_NMPC_linear(system, encoder, x_min, x_max, u_min, u_max, x0, u_ref, Q
             u_old = u
 
             ue = qp.solve_qp(Ge,Fe,Le,(W@(x[:2])) + c[:,0],solver="osqp")
-            u = ue[:Nc]
+            u[:] = ue[:Nc]
             e = ue[Nc:]
 
-            x[nx:Nc*nx] = ((Phi@x[:2]) + Gamma@u)[:(Nc-1)*nx]
+            x[nx:Nc*nx] = ((Phi@x[:2]) + Gamma@u)[:(Nc-1)*nx] + F0[:(Nc-1)*nx,0]# + np.tile(correction.elements(), Nc-1)
             
             lpv_counter[mpciter] += 1
             if (lpv_counter[mpciter] >= max_iterations) or (np.linalg.norm(u-u_old) < 1e-5):
@@ -846,24 +862,41 @@ def output_NMPC_linear(system, encoder, x_min, x_max, u_min, u_max, x0, u_ref, Q
         t0 = t0 + dt
         
         # denormalize x and u
-        x_denormalized = norm.ystd*x0_norm + norm.y0
+        #x_denormalized = norm.ystd*x0_norm + norm.y0
         u_denormalized = norm.ustd*u[0] + norm.u0
         components_time[2, mpciter + lpv_counter[mpciter]-1] = components_time[2, mpciter + lpv_counter[mpciter]-1] + time.time() - component_start
 
         # make system step and normalize
         component_start = time.time()
-        x_denormalized = system.f(x_denormalized, u_denormalized)
-        x_measured = system.h(x_denormalized, u_denormalized)
+        system.x = system.f(system.x, u_denormalized)
+        y_measured = system.h(system.x, u_denormalized)
         components_time[3, mpciter + lpv_counter[mpciter]-1] = components_time[3, mpciter + lpv_counter[mpciter]-1] + time.time() - component_start
         component_start = time.time()
-        x0_norm = (x_measured - norm.y0)/norm.ystd
+        y_norm = (y_measured - norm.y0)/norm.ystd
 
-        x_log[(mpciter+1)*nx:(mpciter+2)*nx] = x_measured
-        u_log[mpciter] = u_denormalized
+        # apply observer
+        for j in range(nb-1):
+            uhist[0,j] = uhist[0,j+1]
+        uhist[0,nb-1] = torch.Tensor([u[0]])
+
+        for j in range(na):
+            yhist[0,j] = yhist[0,j+1]
+        yhist[0,na] = torch.Tensor([y_norm])
+
+        zest = encoder.encoder(uhist,yhist)
+        yest = encoder.hn(zest)
+        yest_denorm = norm.ystd*yest + norm.y0
+
+        # log measurements and variables
+        x_log[(mpciter+1)*nx:(mpciter+2)*nx] = zest.detach()
+        y_log[mpciter+1] = y_measured
+        y_est_log[mpciter+1] = yest_denorm
+        u_log[mpciter] = u[0]#u_denormalized
         e_log[0,mpciter] = e
         
+        # shift mpc variables left one step
         x = np.hstack((x[nx:(Nc+1)*nx],x[-2:]))
-        x[:nx] = x0_norm
+        x[:nx] = zest.detach()
         u = np.hstack((u[nx:Nc*nx],u[-2:]))
 
         # finished mpc time measurement
@@ -874,7 +907,7 @@ def output_NMPC_linear(system, encoder, x_min, x_max, u_min, u_max, x0, u_ref, Q
     end = time.time()
     runtime = end - start
 
-    return x_log, u_log, e_log, comp_t_log, t, runtime, lpv_counter, reference_list_normalized, components_time
+    return x_log, u_log, e_log, comp_t_log, t, runtime, lpv_counter, reference_list_normalized, components_time, y_log, y_est_log, x_reference_list_normalized, u_reference_list_normalized
 
 
 # -------------------------  Main function  -------------------------
@@ -889,10 +922,12 @@ if __name__ == "__main__":
     max_iterations = 5
 
     # Weight matrices for the cost function
-    Q = np.matrix('1,0;0,100')
+    Q = np.matrix('100,0;0,100')
     R = 1
     
     # Box constraints
+    x_min_out = [-100, -100]
+    x_max_out = [100, 100]
     x_min = [-8, -2]
     x_max = [8, 2]
     u_min = -6
@@ -903,22 +938,28 @@ if __name__ == "__main__":
     u_ref = 0
 
     # determine state references
-    x_reference_list = np.load("references/randomLevelTime5_10Range-1_1Nsim500.npy")
+    #x_reference_list = np.load("references/randomLevelTime5_10Range-1_1Nsim500.npy")
+    x_reference_list = np.load("references/randomLevelTime25_30Range-1_1Nsim500.npy")
+    #x_reference_list = np.vstack((np.zeros(300),np.zeros(300)))
 
     # Weight matrices for the cost function
     Q = np.matrix('1,0;0,100')
     R = 1
 
     # Initialize system and load corresponding encoder
-    sys_unblanced = Systems.NoisyUnbalancedDisc(dt=dt, sigma_n=[0.47, 0.044])
-    I_enc = deepSI.load_system("systems/UnbalancedDisk_dt01_e100_SNR_100")
+    # sys_unblanced = Systems.NoisyUnbalancedDisc(dt=dt, sigma_n=[0,0])#0.47, 0.044
+    # I_enc = deepSI.load_system("systems/UnbalancedDisk_dt01_e100_SNR_100")
     
-    #sys_unblanced = Systems.OutputUnbalancedDisc(dt=dt, sigma_n=[0, 0])
-    #I_enc = deepSI.load_system("systems/OutputUnbalancedDisk_dt01_e300")
+    sys_unblanced = Systems.OutputUnbalancedDisc(dt=dt, sigma_n=[0.0])
+    I_enc = deepSI.load_system("systems/ObserverUnbalancedDisk_dt01_nab_4_e200")
 
-    x_log, u_log, e_log, comp_t_log, t, runtime, lpv_counter, reference_list_normalized, components_time = par_NMPC_linear(sys_unblanced, I_enc, \
-        x_min=x_min, x_max= x_max, u_min=u_min, u_max=u_max, x0=x0, u_ref=u_ref, Q=Q, R=R, dt=dt, dlam=dlam, stages=stages, \
-        x_reference_list=x_reference_list, Nc=Nc, Nsim=Nsim, max_iterations=max_iterations)
+    # x_log, u_log, e_log, comp_t_log, t, runtime, lpv_counter, reference_list_normalized, components_time = par_NMPC_linear(sys_unblanced, I_enc, \
+    #     x_min=x_min, x_max= x_max, u_min=u_min, u_max=u_max, x0=x0, u_ref=u_ref, Q=Q, R=R, dt=dt, dlam=dlam, stages=stages, \
+    #     x_reference_list=x_reference_list, Nc=Nc, Nsim=Nsim, max_iterations=max_iterations)
+
+    x_log, u_log, e_log, comp_t_log, t, runtime, lpv_counter, reference_list_normalized, components_time, y_log, y_est_log, Xs, Us \
+         = output_NMPC_linear(sys_unblanced, I_enc, x_min=x_min_out, x_max= x_max_out, u_min=u_min, u_max=u_max, x0=x0, u_ref=u_ref, \
+            Q=Q, R=R, dt=dt, dlam=dlam, stages=stages, x_reference_list=x_reference_list, Nc=Nc, Nsim=Nsim, max_iterations=max_iterations)
 
     print("Runtime:" + str(runtime))
 
@@ -931,22 +972,22 @@ if __name__ == "__main__":
 
     plt.subplot(2,3,1)
     #plt.plot(np.arange(Nsim+1)*dt, x_log[0,:], label='angluar velocity')
-    plt.plot(np.arange(Nsim+1)*dt, x_log[0::nx], label='angluar velocity')
-    plt.plot(np.arange(Nsim+1)*dt,  np.hstack((np.zeros(1),x_reference_list[0,:Nsim])), '--', label='reference')
-    plt.plot(np.arange(Nsim)*dt, np.ones(Nsim)*x_max[0], 'r-.', label='max')
-    plt.plot(np.arange(Nsim)*dt, np.ones(Nsim)*x_min[0], 'r-.', label='min')
-    plt.ylabel("angular velocity [rad/s]") # not sure about the unit
+    plt.plot(np.arange(Nsim+1)*dt, x_log[0::nx], label='state 1')
+    plt.plot(np.arange(Nsim+1)*dt, np.hstack((np.zeros(1),Xs[0,:Nsim])), '--', label='steady state')
+    # plt.plot(np.arange(Nsim)*dt, np.ones(Nsim)*x_max[0], 'r-.', label='max')
+    # plt.plot(np.arange(Nsim)*dt, np.ones(Nsim)*x_min[0], 'r-.', label='min')
+    #plt.ylabel("angular velocity [rad/s]") # not sure about the unit
     plt.xlabel("time [s]")
     plt.grid()
     plt.legend()
 
     plt.subplot(2,3,2)
     #plt.plot(np.arange(Nsim+1)*dt, x_log[1,:], label='angle')
-    plt.plot(np.arange(Nsim+1)*dt, x_log[1::nx], label='angluar velocity')
-    plt.plot(np.arange(Nsim+1)*dt, np.hstack((np.zeros(1),x_reference_list[1,:Nsim])), '--', label='reference') # figure out what the correct hstack should be here
-    plt.plot(np.arange(Nsim)*dt, np.ones(Nsim)*x_max[1], 'r-.', label='max')
-    plt.plot(np.arange(Nsim)*dt, np.ones(Nsim)*x_min[1], 'r-.', label='min')
-    plt.ylabel("angle [rad]") # not sure about the unit
+    plt.plot(np.arange(Nsim+1)*dt, x_log[1::nx], label='state 2')
+    plt.plot(np.arange(Nsim+1)*dt, np.hstack((np.zeros(1),Xs[1,:Nsim])), '--', label='steady state') # figure out what the correct hstack should be here
+    # plt.plot(np.arange(Nsim)*dt, np.ones(Nsim)*x_max[1], 'r-.', label='max')
+    # plt.plot(np.arange(Nsim)*dt, np.ones(Nsim)*x_min[1], 'r-.', label='min')
+    #plt.ylabel("angle [rad]") # not sure about the unit
     plt.xlabel("time [s]")
     plt.grid()
     plt.legend()
@@ -954,7 +995,8 @@ if __name__ == "__main__":
     plt.subplot(2,3,3)
     #plt.plot(np.arange(Nsim)*dt, u_log[0,:], label='input')
     plt.plot(np.arange(Nsim)*dt, u_log[:], label='input')
-    plt.plot(np.arange(Nsim)*dt, np.ones(Nsim)*u_ref, '--', label='reference')
+    plt.plot(np.arange(Nsim)*dt, Us[0,:Nsim], '--', label='steady state')
+    # plt.plot(np.arange(Nsim)*dt, np.ones(Nsim)*u_ref, '--', label='reference')
     plt.plot(np.arange(Nsim)*dt, np.ones(Nsim)*u_max, 'r-.', label='max')
     plt.plot(np.arange(Nsim)*dt, np.ones(Nsim)*u_min, 'r-.', label='min')
     plt.ylabel("input [V]")
@@ -979,11 +1021,18 @@ if __name__ == "__main__":
     plt.legend()
 
     plt.subplot(2,3,6)
-    plt.step(np.arange(Nsim), e_log[0,:], label='epsilon')
-    plt.plot(np.arange(Nsim), np.zeros(Nsim), '--', label='0 value')
-    plt.ylabel("epsilon")
-    plt.xlabel("mpciter")
-    plt.grid()
+    # plt.step(np.arange(Nsim), e_log[0,:], label='epsilon')
+    # plt.plot(np.arange(Nsim), np.zeros(Nsim), '--', label='0 value')
+    # plt.ylabel("epsilon")
+    # plt.xlabel("mpciter")
+    plt.plot(np.arange(Nsim+1)*dt, y_log, label='output')
+    plt.plot(np.arange(Nsim+1)*dt, y_est_log, label='obsv est')
+    plt.plot(np.arange(Nsim+1)*dt, np.hstack((np.zeros(1),x_reference_list[1,:Nsim])), '--', label='reference') # figure out what the correct hstack should be here
+    # plt.plot(np.arange(Nsim)*dt, np.ones(Nsim)*x_max[1], 'r-.', label='max')
+    # plt.plot(np.arange(Nsim)*dt, np.ones(Nsim)*x_min[1], 'r-.', label='min')
+    plt.ylabel("angle [rad]")
+    plt.xlabel("time [s]")
+    plt.grid()    
     plt.legend();
 
     plt.show()
@@ -999,10 +1048,10 @@ if __name__ == "__main__":
     plt.grid(axis='y')
     plt.ylabel("time [s]")
     plt.xlabel("components")
-    plt.show()
+    # plt.show()
 
     fig3 = plt.figure(figsize=[10.0, 10.0])#['getAB', 'solve', 'overhead', 'sim']
     plt.bar(['getAB', 'solve', 'overhead', 'sim'], np.sum(components_time, axis=1))
     plt.ylabel("time [s]")
     plt.xlabel("components")
-    plt.show()
+    # plt.show()

@@ -34,7 +34,7 @@ if __name__ == "__main__":
     #         break
 
     #x_reference_list = np.vstack((x0_reference_list, x1_reference_list))
-    x_reference_list = stackReferences((np.zeros((500)), randomLevelReference(500, [15,20], [-2, 2])))
-    np.save("references/randomLevelTime15_20Range-2_2Nsim500.npy", x_reference_list)
+    x_reference_list = stackReferences((np.zeros((500)), randomLevelReference(500, [25,30], [-1, 1])))
+    np.save("references/randomLevelTime25_30Range-1_1Nsim500.npy", x_reference_list)
     #print(x_reference_list)
     #print(x_reference_list)
