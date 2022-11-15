@@ -28,84 +28,6 @@ class I_encoder(deepSI.fit_systems.SS_encoder):
         hn_in = self.nx + nu if self.feedthrough else self.nx
         self.hn =      nn.Identity(hn_in)
 
-def CasADiExp(ss_enc, x, u):
-    n_hidden_layers = ss_enc.f_n_hidden_layers
-    nu = ss_enc.nu if ss_enc.nu is not None else 1
-
-    params = {}
-    for name, param in ss_enc.fn.named_parameters():
-        params[name] = param.detach().numpy()
-    params_list = list(params.values())
-    
-    xu = vertcat(x,u)
-
-    temp_nn = xu
-    for i in range(n_hidden_layers):
-        W_NL = params_list[2+i*2]
-        b_NL = params_list[3+i*2]
-        temp_nn = mtimes(W_NL, temp_nn)+b_NL
-        temp_nn = tanh(temp_nn)
-    W_NL = params_list[2+n_hidden_layers*2]
-    b_NL = params_list[3+n_hidden_layers*2]
-    nn_NL = mtimes(W_NL, temp_nn)+b_NL
-
-    W_Lin = params_list[0]
-    b_Lin = params_list[1]
-    nn_Lin = mtimes(W_Lin,xu) + b_Lin
-
-    return nn_NL + nn_Lin
-
-def CasADiHn(ss_enc, x):
-    n_hidden_layers = 2#ss_enc.h_n_hidden_layers
-
-    params = {}
-    for name, param in ss_enc.hn.named_parameters():
-        params[name] = param.detach().numpy()
-    params_list = list(params.values())
-
-    temp_nn = x
-    for i in range(n_hidden_layers):
-        W_NL = params_list[2+i*2]
-        b_NL = params_list[3+i*2]
-        temp_nn = mtimes(W_NL, temp_nn)+b_NL
-        temp_nn = tanh(temp_nn)
-    W_NL = params_list[2+n_hidden_layers*2]
-    b_NL = params_list[3+n_hidden_layers*2]
-    nn_NL = mtimes(W_NL, temp_nn)+b_NL
-
-    W_Lin = params_list[0]
-    b_Lin = params_list[1]
-    nn_Lin = mtimes(W_Lin,x) + b_Lin
-
-    return nn_NL + nn_Lin
-
-def CasADiFn(ss_enc, x, u):
-    n_hidden_layers = 2#ss_enc.f_n_hidden_layers
-    nu = ss_enc.nu if ss_enc.nu is not None else 1
-
-    params = {}
-    for name, param in ss_enc.fn.named_parameters():
-        params[name] = param.detach().numpy()
-    params_list = list(params.values())
-    
-    xu = vertcat(x,u)
-
-    temp_nn = xu
-    for i in range(n_hidden_layers):
-        W_NL = params_list[2+i*2]
-        b_NL = params_list[3+i*2]
-        temp_nn = mtimes(W_NL, temp_nn)+b_NL
-        temp_nn = tanh(temp_nn)
-    W_NL = params_list[2+n_hidden_layers*2]
-    b_NL = params_list[3+n_hidden_layers*2]
-    nn_NL = mtimes(W_NL, temp_nn)+b_NL
-
-    W_Lin = params_list[0]
-    b_Lin = params_list[1]
-    nn_Lin = mtimes(W_Lin,xu) + b_Lin
-
-    return nn_NL + nn_Lin
-
 # -------------------------  NMPC functions  ------------------------
 
 def NMPC(system, encoder, x_min, x_max, u_min, u_max, x0, u_ref, Q, R, dt, dlam, stages, x_reference_list, Nc=5, Nsim=30, max_iterations=1):
@@ -943,7 +865,7 @@ if __name__ == "__main__":
     #x_reference_list = np.vstack((np.zeros(300),np.zeros(300)))
 
     # Weight matrices for the cost function
-    Q = np.matrix('1,0;0,100')
+    Q = np.matrix('1,0;0,1000')
     R = 1
 
     # Initialize system and load corresponding encoder

@@ -1,6 +1,7 @@
 import numpy as np
 from matplotlib import pyplot as plt
 import random
+import deepSI
 
 def stackReferences(references_tuple):
     return np.vstack(references_tuple)
@@ -34,7 +35,11 @@ if __name__ == "__main__":
     #         break
 
     #x_reference_list = np.vstack((x0_reference_list, x1_reference_list))
-    x_reference_list = stackReferences((np.zeros((500)), randomLevelReference(500, [25,30], [-1, 1])))
-    np.save("references/randomLevelTime25_30Range-1_1Nsim500.npy", x_reference_list)
+    #x_reference_list = stackReferences((np.zeros((500)), randomLevelReference(500, [25,30], [-1.5, 1.5])))
+    x_reference_list = stackReferences((np.zeros((500)), 0.5*deepSI.deepSI.exp_design.multisine(500, pmax=11, n_crest_factor_optim=20)))
+    np.save("references/multiSineNsim500.npy", x_reference_list)
+    print(x_reference_list.shape)
+    plt.plot(x_reference_list[1,:])
+    plt.show()
     #print(x_reference_list)
     #print(x_reference_list)
