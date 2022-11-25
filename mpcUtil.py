@@ -143,6 +143,7 @@ def getABlist(x,u,Nc,nx,nu,Get_A,Get_B, list_A, list_B):
     
     return list_A, list_B
 
+# Fix use of Xk-1 in getting C, should be Xk
 def getABClist(x,u,Nc,nx,nu,ny,Get_A,Get_B,Get_C, list_A, list_B, list_C):
     pA = Get_A(np.vstack(np.split(x,Nc)).T,u)
     for i in range(Nc):
@@ -155,6 +156,13 @@ def getABClist(x,u,Nc,nx,nu,ny,Get_A,Get_B,Get_C, list_A, list_B, list_C):
         list_C[(ny*i):(ny*i+ny),:] = pC[:,i*nx:(i+1)*nx]
     
     return list_A, list_B, list_C
+
+def getClist(x,u,Nc,nx,ny,Get_C, list_C):
+    pC = Get_C(np.vstack(np.split(x,Nc)).T,u)
+    for i in range(Nc):
+        list_C[(ny*i):(ny*i+ny),:] = pC[:,i*nx:(i+1)*nx]
+    
+    return list_C
 
 def getXsUs(y_reference_list_normalize, nx, nu, ny, Nsim, u_min, u_max, x_min, x_max, get_A, get_B, C, f0, h0):
     ne = 1 #number of variables in epsilon
@@ -254,7 +262,6 @@ def getXsUs_Cs(y_reference_list_normalize, nx, nu, ny, Nsim, u_min, u_max, y_min
     b[:nx] = f0
 
     P = np.zeros((nx+nu+ne, nx+nu+ne))
-    #P[:nx, :nx] = C.T@Q@C
     P[nx:nx+nu, nx:nx+nu] = R
     P[nx+nu:, nx+nu:] = lam
 
@@ -268,7 +275,6 @@ def getXsUs_Cs(y_reference_list_normalize, nx, nu, ny, Nsim, u_min, u_max, y_min
     Cs = np.zeros((ny,nx))
 
     A = np.zeros((nx+ny, nx+nu+ne))
-    #A[nx:nx+ny,:nx] = C #change this to getC from xs us when needed
 
     x_reference_list_normalized = np.zeros((nx, Nsim))
     u_reference_list_normalized = np.zeros((nu, Nsim))
@@ -277,8 +283,7 @@ def getXsUs_Cs(y_reference_list_normalize, nx, nu, ny, Nsim, u_min, u_max, y_min
 
     for j in range(Nsim):
 
-        b[nx:nx+ny] = y_reference_list_normalize[j] - h0 #+ correction_h #add h0 here when needed
-        #q[:nx,0] = C.T@Q@(h0 - y_reference_list_normalize[j])
+        b[nx:nx+ny] = y_reference_list_normalize[j] - h0
 
         for i in range(100):
             As[:,:] = get_A(xs, us)
@@ -290,13 +295,10 @@ def getXsUs_Cs(y_reference_list_normalize, nx, nu, ny, Nsim, u_min, u_max, y_min
             A[:nx,:nx] = np.eye(nx) - As
             A[:nx,nx:nx+nu] = -Bs
             A[nx:nx+ny,:nx] = Cs
-            #b[nx:nx+ny] = Cs - h0
 
             q[:nx,0] = Cs.T@Q@(h0 - y_reference_list_normalize[j])
             P[:nx, :nx] = Cs.T@Q@Cs
 
-            #xu[:] = (np.linalg.inv(A)@b)[:,0]
-            #xue[:] = (qp.solve_qp(P,q,T,h[:,0],A,b[:,0],solver="osqp"))
             xue[:] = (qp.solve_qp(P,q,T,h[:,0],A,b[:,0],solver="osqp"))
 
             xold = xs
@@ -356,5 +358,88 @@ def getDEMc_out(y_min, y_max, u_min, u_max, Nc, ny, nu):
 
     return D, E, M, c
 
+def getXsUs_Cs_test(y_reference_list_normalize, nx, nu, ny, Nsim, u_min, u_max, y_min, y_max, get_A, get_B, get_C, f0, h0):
+    ne = 1 #number of variables in epsilon
+    Q = 1*np.eye(ny) # add this as variable of function
+    R = 1*np.eye(nu) # add this as variable of function
+    lam = 1000
+    
+    In = np.eye(ny)
+    Im = np.eye(nu)
+    Zn = np.zeros((nu,ny))
+    Zm = np.zeros((ny,nu))
+
+    Mi = np.vstack((Zn, Zn, -In, In))
+    Ei = np.vstack((-Im, Im, Zm, Zm))
+    h = np.array([list(itertools.chain([-u_min, u_max], [x*-1 for x in y_min],  y_max))]).T - Mi@h0
+
+    T = np.zeros((2*(ny+nu), nx+nu+ne))
+    #T[:,:ny] = Mi
+    T[:,nx:nx+nu] = Ei
+    T[:,nx+nu:] = -np.ones((2*(ny+nu),ne))
+
+    b = np.zeros((nx+ny, 1))
+    b[:nx] = f0
+
+    P = np.zeros((nx+nu+ne, nx+nu+ne))
+    #P[:nx, :nx] = C.T@Q@C
+    P[nx:nx+nu, nx:nx+nu] = R
+    P[nx+nu:, nx+nu:] = lam
+
+    q = np.zeros((nx+nu+ne,1))
+    
+    xs = np.zeros(nx)
+    us = np.zeros(nu)
+    xue = np.zeros(nx+nu+ne)
+    As = np.zeros((nx,nx))
+    Bs = np.zeros((nx,nu))
+    Cs = np.zeros((ny,nx))
+
+    A = np.zeros((nx+ny, nx+nu+ne))
+    #A[nx:nx+ny,:nx] = C #change this to getC from xs us when needed
+
+    x_reference_list_normalized = np.zeros((nx, Nsim))
+    u_reference_list_normalized = np.zeros((nu, Nsim))
+    e_reference_list_normalized = np.zeros((ne, Nsim))
+
+
+    for j in range(Nsim):
+
+        b[nx:nx+ny] = y_reference_list_normalize[j] - h0 #+ correction_h #add h0 here when needed
+        #q[:nx,0] = C.T@Q@(h0 - y_reference_list_normalize[j])
+
+        for i in range(100):
+            As[:,:] = get_A(xs, us)
+            Bs[:,:] = get_B(xs, us)
+            Cs[:,:] = get_C(xs, us)
+
+            T[:,:nx] = Mi@Cs
+
+            A[:nx,:nx] = np.eye(nx) - As
+            A[:nx,nx:nx+nu] = -Bs
+            A[nx:nx+ny,:nx] = Cs
+            #b[nx:nx+ny] = Cs - h0
+
+            q[:nx,0] = Cs.T@Q@(h0 - y_reference_list_normalize[j])
+            P[:nx, :nx] = Cs.T@Q@Cs
+
+            #xu[:] = (np.linalg.inv(A)@b)[:,0]
+            #xue[:] = (qp.solve_qp(P,q,T,h[:,0],A,b[:,0],solver="osqp"))
+            xue[:] = (qp.solve_qp(P,q,T,h[:,0],A,b[:,0],solver="osqp"))
+
+            xold = xs
+            uold = us
+            xs = xue[:nx]
+            us = xue[nx:nx+nu]
+            e = xue[nx+nu:]
+
+            if np.linalg.norm(xs-xold) <= 1e-8 and np.linalg.norm(us-uold) <= 1e-8:
+                break
+
+        x_reference_list_normalized[:,j] = xs
+        u_reference_list_normalized[:,j] = us
+        e_reference_list_normalized[:,j] = e
+        
+    return x_reference_list_normalized, u_reference_list_normalized, e_reference_list_normalized
 
 # add new code here

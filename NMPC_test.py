@@ -59,23 +59,22 @@ def output_NMPC_linear(system, encoder, x_min, x_max, u_min, u_max, y_min, y_max
     Get_C = get_C.map(Nc, "thread", 32)
     
     # declare bounds of system
-    x_max_norm = (x_max - norm.y0)/norm.ystd
-    x_min_norm = (x_min - norm.y0)/norm.ystd
+    # x_max_norm = (x_max - norm.y0)/norm.ystd
+    # x_min_norm = (x_min - norm.y0)/norm.ystd
     y_max_norm = (y_max - norm.y0)/norm.ystd
     y_min_norm = (y_min - norm.y0)/norm.ystd
     u_min_norm = (u_min - norm.u0)/norm.ustd
     u_max_norm = (u_max - norm.u0)/norm.ustd
 
     h0 = np.array(correction_h.elements())
-
     y_reference_list_normalized = np.clip(y_reference_list_normalized, y_min_norm, y_max_norm)
 
     #C = np.array([[0, 1]])
     x_reference_list_normalized, u_reference_list_normalized, e_reference_list_normalized = getXsUs_Cs(y_reference_list_normalized,\
          nx, nu, 1, Nsim+Nc, u_min_norm, u_max_norm, y_min_norm, y_max_norm, get_A, get_B, get_C, correction, h0) # fix the Nsim for Xs
 
-    plt.plot(np.arange(Nsim+Nc), e_reference_list_normalized[0,:])
-    plt.show()
+    # plt.plot(np.arange(Nsim+Nc), e_reference_list_normalized[0,:])
+    # plt.show()
 
     # logging list
     u_log = np.zeros(Nsim*n_controls)
@@ -101,7 +100,7 @@ def output_NMPC_linear(system, encoder, x_min, x_max, u_min, u_max, y_min, y_max
     Psi = getPsi(Nc, R)
     Omega = getPsi(Nc, Q)
     #D, E, M, c = getDEMc(x_min_norm, x_max_norm, u_min_norm, u_max_norm, Nc, nx, nu)
-    D, E, M, c = getDEMc_out(y_min_norm, y_max_norm, u_min_norm, u_max_norm, Nc, ny, nu) #chagnge to y_min, y_max
+    D, E, M, c = getDEMc_out(y_min_norm, y_max_norm, u_min_norm, u_max_norm, Nc, ny, nu)
 
     ne = 1
     Ge = np.zeros((Nc+ne, Nc+ne))
@@ -113,11 +112,11 @@ def output_NMPC_linear(system, encoder, x_min, x_max, u_min, u_max, y_min, y_max
     yhist = torch.zeros((1,na+1))
 
     f0 = np.array(correction.elements())[np.newaxis].T
-    #h0 = np.array(correction_h.elements())
     H0 = np.tile(h0,Nc)[np.newaxis].T
     y_norm = np.zeros((1,1))
 
     system.reset_state()
+    # fig7 = plt.figure(figsize=[5.0, 5.0])
 
     for mpciter in range(Nsim):
         start_time_iter = time.time()
@@ -129,6 +128,7 @@ def output_NMPC_linear(system, encoder, x_min, x_max, u_min, u_max, y_min, y_max
             #list_A, list_B = getABlist(x,u,Nc,nx,nu,Get_A,Get_B, list_A, list_B)
             #list_A, list_B, list_C = getABClist(x,u,Nc,nx,nu,ny,Get_A,Get_B,Get_C, list_A, list_B, list_C)
             list_A, list_B, list_C = getABClist(np.hstack((x0_norm, x[:-nx])),u,Nc,nx,nu,ny,Get_A,Get_B,Get_C, list_A, list_B, list_C)
+            list_C = getClist(x,u,Nc,nx,ny,Get_C, list_C)
             components_time[0, mpciter + lpv_counter[mpciter]] = components_time[0, mpciter + lpv_counter[mpciter]] + time.time() - component_start
             
             component_start = time.time()
@@ -147,10 +147,11 @@ def output_NMPC_linear(system, encoder, x_min, x_max, u_min, u_max, y_min, y_max
             #Le = np.hstack((L, -np.ones((Nc*2*(nx+nu)+2*nx,1))))
             Le = np.hstack((L, -np.ones((Nc*2*(ny+nu)+2*ny,1))))
             Ge[:Nc, :Nc] = G
-            Ge[Nc:,Nc:] = 1000000
+            Ge[Nc:,Nc:] = 1000
             Fe = np.vstack((F, np.zeros((ne,ne))))
 
             u_old = u
+            # x_old = x
 
             #ue = qp.solve_qp(Ge,Fe,Le,(W@(x0_norm)) + c[:,0],solver="osqp")
             ue = qp.solve_qp(Ge,Fe,Le,W + c[:,0],solver="osqp")
@@ -158,9 +159,22 @@ def output_NMPC_linear(system, encoder, x_min, x_max, u_min, u_max, y_min, y_max
             e = ue[Nc:]
 
             x[:] = ((Phi@x0_norm) + Gamma@u)[:] + F0[:,0]# + np.tile(correction.elements(), Nc-1)
+
+            # lpv iteration output and input plot
+            # if mpciter == 0:
+            #     str_label = "iter " + str(lpv_counter[mpciter] + 1)
+
+            #     y_plot = norm.ystd*(Z@x + H0[:,0]) + norm.y0
+            #     plt.subplot(2,1,1)
+            #     plt.plot(y_plot, label=str_label)
+
+            #     u_plot = norm.ustd*u + norm.u0
+            #     plt.subplot(2,1,2)
+            #     plt.plot(u_plot, label=str_label)
             
             lpv_counter[mpciter] += 1
-            if (lpv_counter[mpciter] >= max_iterations) or (np.linalg.norm(u-u_old) < 1e-6):
+            #print((np.linalg.norm(u-u_old, ord=1)))
+            if (lpv_counter[mpciter] >= max_iterations) or (np.linalg.norm(u-u_old) < 1e-8):
                 components_time[1, mpciter + lpv_counter[mpciter]-1] = components_time[1, mpciter + lpv_counter[mpciter]-1] + time.time() - component_start
                 break
             components_time[1, mpciter + lpv_counter[mpciter]-1] = components_time[1, mpciter + lpv_counter[mpciter]-1] + time.time() - component_start
@@ -196,6 +210,10 @@ def output_NMPC_linear(system, encoder, x_min, x_max, u_min, u_max, y_min, y_max
 
         zest = encoder.encoder(uhist,yhist)
         yest = encoder.hn(zest)
+        try:
+            yest = (yest.detach()).numpy()
+        except:
+            yest = yest
         yest_denorm = norm.ystd*yest + norm.y0
 
         # log measurements and variables
@@ -230,7 +248,7 @@ if __name__ == "__main__":
     Nsim = 450
     dlam = 0.05
     stages = 20
-    max_iterations = 5
+    max_iterations = 4
 
     # Weight matrices for the cost function
     Q = np.matrix('10,0;0,10')
@@ -243,22 +261,24 @@ if __name__ == "__main__":
     x_max = [8, 2]
     u_min = -6
     u_max = 6
-    y_min = [-0.5]
-    y_max = [0.5]
+    y_min = [-.7]
+    y_max = [.7]
 
     # Initial and final values
     x0 = [0,0]
     u_ref = 0
 
     # determine state references
-    #x_reference_list = np.load("references/randomLevelTime5_10Range-1_1Nsim500.npy")
-    x_reference_list = np.load("references/randomLevelTime25_30Range-1_1Nsim500.npy")
+    #x_reference_list = 1.2*np.load("references/randomLevelTime5_10Range-1_1Nsim500.npy")
+    x_reference_list = 1.1*np.load("references/randomLevelTime25_30Range-1_1Nsim500.npy")
     #x_reference_list = np.load("references/multiSineInOutNsim500.npy")
     #x_reference_list = np.vstack((np.zeros(300),np.zeros(300)))
     
-    sys_unblanced = Systems.OutputUnbalancedDisc(dt=dt, sigma_n=[0.045]) #0.045
+    sys_unblanced = Systems.OutputUnbalancedDisc(dt=dt, sigma_n=[0.0]) #0.045
     #I_enc = deepSI.load_system("systems/ObserverUnbalancedDisk_dt01_nab_4_e200")
     I_enc = deepSI.load_system("systems/ObserverUnbalancedDisk_dt01_e300")
+    #I_enc = deepSI.load_system("systems/ObserverUnbalancedDisk_dt01_nab_4_SNR_20_e100")
+    #I_enc = deepSI.load_system("systems/ObserverUnbalancedDisk_dt01_nab_4_SNR_30_e250")
 
     x_log, u_log, e_log, comp_t_log, t, runtime, lpv_counter, components_time, y_log, y_est_log, Xs, Us \
          = output_NMPC_linear(sys_unblanced, I_enc, x_min=x_min_out, x_max= x_max_out, u_min=u_min, u_max=u_max, y_min=y_min, y_max=y_max, x0=x0, u_ref=u_ref, \
@@ -271,24 +291,36 @@ if __name__ == "__main__":
     nx = I_enc.nx
     nu = I_enc.nu if I_enc.nu is not None else 1
 
-    fig1 = plt.figure(figsize=[6.0, 10.0])
+    # continuation of LPV iteration output and input plot
+    # plt.subplot(2,1,1)
+    # plt.grid()
+    # plt.xlabel("time [s]")
+    # plt.ylabel("angle [rad]")
+    # plt.legend()
+    # plt.subplot(2,1,2)
+    # plt.grid()
+    # plt.xlabel("time [s]")
+    # plt.ylabel("input [V]")
+    # plt.legend()
 
-    plt.subplot(4,1,1)
-    plt.plot(np.arange(Nsim+1)*dt, x_log[0::nx], label='state 1')
-    plt.plot(np.arange(Nsim+1)*dt, np.hstack((np.zeros(1),Xs[0,:Nsim])), '--', label='steady state')
-    plt.xlabel("time [s]")
-    plt.grid()
-    plt.legend()
+    fig1 = plt.figure(figsize=[4.0, 7.0])
 
-    plt.subplot(4,1,2)
-    plt.plot(np.arange(Nsim+1)*dt, x_log[1::nx], label='state 2')
-    plt.plot(np.arange(Nsim+1)*dt, np.hstack((np.zeros(1),Xs[1,:Nsim])), '--', label='steady state')
-    plt.xlabel("time [s]")
-    plt.grid()
-    plt.legend()
+    # plt.subplot(2,2,1)
+    # plt.plot(np.arange(Nsim+1)*dt, x_log[0::nx], label='state 1')
+    # plt.plot(np.arange(Nsim+1)*dt, np.hstack((np.zeros(1),Xs[0,:Nsim])), '--', label='steady state')
+    # plt.xlabel("time [s]")
+    # plt.grid()
+    # plt.legend()
+
+    # plt.subplot(2,2,2)
+    # plt.plot(np.arange(Nsim+1)*dt, x_log[1::nx], label='state 2')
+    # plt.plot(np.arange(Nsim+1)*dt, np.hstack((np.zeros(1),Xs[1,:Nsim])), '--', label='steady state')
+    # plt.xlabel("time [s]")
+    # plt.grid()
+    # plt.legend()
 
     Us_denorm = Us*I_enc.norm.ustd + I_enc.norm.u0
-    plt.subplot(4,1,3)
+    plt.subplot(1,2,1)
     plt.plot(np.arange(Nsim)*dt, u_log[:], label='input')
     plt.plot(np.arange(Nsim)*dt, Us_denorm[0,:Nsim], '--', label='steady state')
     plt.plot(np.arange(Nsim)*dt, np.ones(Nsim)*u_max, 'r-.', label='max')
@@ -296,9 +328,24 @@ if __name__ == "__main__":
     plt.ylabel("input [V]")
     plt.xlabel("time [s]")
     plt.grid()
-    plt.legend();
+    plt.legend(loc='upper right');
 
-    plt.subplot(4,1,4)
+    plt.subplot(1,2,2)
+    plt.plot(np.arange(Nsim+1)*dt, y_log, label='output')
+    plt.plot(np.arange(Nsim+1)*dt, np.hstack((np.zeros(1),x_reference_list[1,:Nsim])), '--', label='reference')
+    plt.plot(np.arange(Nsim+1)*dt, y_est_log, 'y:', label='obsv est')
+    plt.plot(np.arange(Nsim+1)*dt, np.ones(Nsim+1)*y_max[0], 'r-.', label='max')
+    plt.plot(np.arange(Nsim+1)*dt, np.ones(Nsim+1)*y_min[0], 'r-.', label='min')
+    #plt.plot(np.arange(Nsim+1)*dt, y_log - np.hstack((np.zeros(1),x_reference_list[1,:Nsim])), label='error')
+    plt.ylabel("angle [rad]")
+    plt.xlabel("time [s]")
+    plt.grid()    
+    plt.legend(loc='upper right');
+
+    plt.show()
+
+    fig6 = plt.figure(figsize=[5.0, 5.0])
+    #plt.plot(np.arange(Nsim+1)*dt, y_log - np.hstack((np.zeros(1),x_reference_list[1,:Nsim])), label='error')
     plt.plot(np.arange(Nsim+1)*dt, y_log, label='output')
     plt.plot(np.arange(Nsim+1)*dt, y_est_log, label='obsv est')
     plt.plot(np.arange(Nsim+1)*dt, np.ones(Nsim+1)*y_max[0], 'r-.', label='max')
@@ -308,10 +355,9 @@ if __name__ == "__main__":
     plt.xlabel("time [s]")
     plt.grid()    
     plt.legend();
+    #plt.show()
 
-    plt.show()
-
-    fig4 = plt.figure(figsize=[6.0, 6.0])
+    fig4 = plt.figure(figsize=[5.0, 5.0])
     #plt.subplot(2,1,1)
     plt.step(np.arange(Nsim), lpv_counter, label='lpv counter')
     plt.plot(np.arange(Nsim), np.ones(Nsim)*max_iterations, '--', label='max iter')
@@ -321,7 +367,7 @@ if __name__ == "__main__":
     plt.legend();
     # plt.show()
 
-    fig4 = plt.figure(figsize=[6.0, 6.0])
+    fig4 = plt.figure(figsize=[5.0, 5.0])
     #plt.subplot(2,1,2)
     plt.step(np.arange(Nsim), comp_t_log, label='computation time')
     plt.plot(np.arange(Nsim), np.ones(Nsim)*dt, '--', label='dt')
@@ -331,7 +377,7 @@ if __name__ == "__main__":
     plt.legend()
     # plt.show()
 
-    fig2 = plt.figure(figsize=[10.0, 10.0])#['getAB', 'solve', 'overhead', 'sim']
+    fig2 = plt.figure(figsize=[5.0, 5.0])#['getAB', 'solve', 'overhead', 'sim']
     data1 = np.trim_zeros(components_time[0,:])
     data2 = np.trim_zeros(components_time[1,:])
     data3 = np.trim_zeros(components_time[2,:])
@@ -344,7 +390,7 @@ if __name__ == "__main__":
     plt.xlabel("components")
     # plt.show()
 
-    fig3 = plt.figure(figsize=[10.0, 10.0])#['getAB', 'solve', 'overhead', 'sim']
+    fig3 = plt.figure(figsize=[5.0, 5.0])#['getAB', 'solve', 'overhead', 'sim']
     plt.bar(['getAB', 'solve', 'overhead', 'sim'], np.sum(components_time, axis=1))
     plt.ylabel("time [s]")
     plt.xlabel("components")
