@@ -151,9 +151,9 @@ def getABClist(x,u,Nc,nx,nu,ny,Get_A,Get_B,Get_C, list_A, list_B, list_C):
     pB = Get_B(np.vstack(np.split(x,Nc)).T,u)
     for i in range(Nc):
         list_B[(nx*i):(nx*i+nx),:] = pB[:,i*nu:(i+1)*nu]
-    pC = Get_C(np.vstack(np.split(x,Nc)).T,u)
-    for i in range(Nc):
-        list_C[(ny*i):(ny*i+ny),:] = pC[:,i*nx:(i+1)*nx]
+    # pC = Get_C(np.vstack(np.split(x,Nc)).T,u)
+    # for i in range(Nc):
+    #     list_C[(ny*i):(ny*i+ny),:] = pC[:,i*nx:(i+1)*nx]
     
     return list_A, list_B, list_C
 
@@ -321,7 +321,7 @@ def getF0(list_A, f0, Nc, nx):
     for i in range(Nc):
         for j in range(i+1):
             temp = np.eye(2)
-            for l in range(j):
+            for l in range(1,j+1):
                 #print(str(i) + ", " + str(j) + ", " + str(l))
                 temp = np.matmul(list_A[(nx*l):(nx*l+nx),:], temp)
             F0[i*nx:(i+1)*nx, :] = F0[i*nx:(i+1)*nx, :] + temp
@@ -330,7 +330,7 @@ def getF0(list_A, f0, Nc, nx):
 def getZ(list_C, Nc, ny, nx):
     Z = np.zeros((Nc*ny, Nc*nx))
     for i in range(Nc):
-        Z[i*ny:(i+1):ny,i*nx:(i+1)*nx] = list_C[i,:]
+        Z[i*ny:(i+1)*ny,i*nx:(i+1)*nx] = list_C[i,:]
 
     return Z
 
@@ -358,6 +358,7 @@ def getDEMc_out(y_min, y_max, u_min, u_max, Nc, ny, nu):
 
     return D, E, M, c
 
+# no difference with getXsUs_Cs currently
 def getXsUs_Cs_test(y_reference_list_normalize, nx, nu, ny, Nsim, u_min, u_max, y_min, y_max, get_A, get_B, get_C, f0, h0):
     ne = 1 #number of variables in epsilon
     Q = 1*np.eye(ny) # add this as variable of function
