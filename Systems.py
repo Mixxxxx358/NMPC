@@ -114,3 +114,15 @@ class SinCosUnbalancedDisc(deepSI.System_deriv):
 
     def h(self,x,u):
         return [x[0], np.sin(x[1]), np.cos(x[1])]
+
+class LTI(deepSI.System_ss):
+    def __init__(self, sigma_n=[0]):
+        super(LTI, self).__init__(nx=4, nu=None, ny=None)
+        self.sigma_n = sigma_n
+    def f(self,x,u): #state function
+        u2 = 2*np.tanh(x[0]/2)
+        x[:2] = -0.5*x[0] + 0.5*x[1] + u, 0.5*x[0]
+        x[2:] = -0.5*x[2] + 0.5*x[3] + u2, 0.5*x[2]
+        return x
+    def h(self,x,u): #output functions
+        return x[2] + np.random.normal(0, self.sigma_n[0],)

@@ -285,7 +285,7 @@ def getXsUs_Cs(y_reference_list_normalize, nx, nu, ny, Nsim, u_min, u_max, y_min
 
         b[nx:nx+ny] = y_reference_list_normalize[j] - h0
 
-        for i in range(100):
+        for i in range(20):
             As[:,:] = get_A(xs, us)
             Bs[:,:] = get_B(xs, us)
             Cs[:,:] = get_C(xs, us)
@@ -301,14 +301,17 @@ def getXsUs_Cs(y_reference_list_normalize, nx, nu, ny, Nsim, u_min, u_max, y_min
 
             xue[:] = (qp.solve_qp(P,q,T,h[:,0],A,b[:,0],solver="osqp"))
 
-            xold = xs
-            uold = us
+            xold = np.copy(xs)
+            uold = np.copy(us)
             xs = xue[:nx]
             us = xue[nx:nx+nu]
             e = xue[nx+nu:]
 
-            if np.linalg.norm(xs-xold) <= 1e-8 and np.linalg.norm(us-uold) <= 1e-8:
+            if np.linalg.norm(xs-xold) <= 1e-4 and np.linalg.norm(us-uold) <= 1e-4:
+                print("Target Selector iteration: " + str(j))
+                print("LPV counter: " + str(i))
                 break
+        
 
         x_reference_list_normalized[:,j] = xs
         u_reference_list_normalized[:,j] = us
@@ -320,7 +323,7 @@ def getF0(list_A, f0, Nc, nx):
     F0 = np.zeros([nx*Nc, nx])
     for i in range(Nc):
         for j in range(i+1):
-            temp = np.eye(2)
+            temp = np.eye(nx)
             for l in range(1,j+1):
                 #print(str(i) + ", " + str(j) + ", " + str(l))
                 temp = np.matmul(list_A[(nx*l):(nx*l+nx),:], temp)
@@ -409,7 +412,7 @@ def getXsUs_Cs_test(y_reference_list_normalize, nx, nu, ny, Nsim, u_min, u_max, 
         b[nx:nx+ny] = y_reference_list_normalize[j] - h0 #+ correction_h #add h0 here when needed
         #q[:nx,0] = C.T@Q@(h0 - y_reference_list_normalize[j])
 
-        for i in range(100):
+        for i in range(10):
             As[:,:] = get_A(xs, us)
             Bs[:,:] = get_B(xs, us)
             Cs[:,:] = get_C(xs, us)
