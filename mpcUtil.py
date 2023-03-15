@@ -446,4 +446,47 @@ def getXsUs_Cs_test(y_reference_list_normalize, nx, nu, ny, Nsim, u_min, u_max, 
         
     return x_reference_list_normalized, u_reference_list_normalized, e_reference_list_normalized
 
+
+# def getABgrad(x,u,Nc,nx,nu,Get_A,Get_B, list_A, list_B, Lambda):
+#     mult_A = np.stack((np.ones((nx,nx)), np.ones((nx,nx))*4, np.ones((nx,nx))))
+#     mult_B = np.stack((np.ones((nx,nu)), np.ones((nx,nu))*4, np.ones((nx,nu))))
+    
+#     for j in range(Nc):
+#         A = np.zeros((nx,nx))
+#         B = np.zeros([nx,nu]) 
+
+#         lambda0 = 0
+
+#         for i in range(n_stages):
+#             an = fA[n_int_comp*n_stages*j+(i)*n_int_comp:n_int_comp*n_stages*j+(i+1)*n_int_comp,0,:,0,:].detach().numpy()
+#             A = A + dlam*1/6*np.sum(np.multiply(mult_A, an), axis=0)
+
+#             bn = fB[n_int_comp*n_stages*j+(i)*n_int_comp:n_int_comp*n_stages*j+(i+1)*n_int_comp,0,:,0,:].detach().numpy()
+#             B = B + dlam*1/6*np.sum(np.multiply(mult_B, bn), axis=0)
+
+#             lambda0 = lambda0 + dlam
+
+#         list_A[nx*(j):nx*(j+1),:] = A.copy()
+#         list_B[nx*(j):nx*(j+1),:] = B.copy()
+
+#     return list_A, list_B
+
+# def getCgrad(x,u,Nc,nx,ny,Get_C, list_C, Lambda):
+#     mult_C = np.vstack((np.ones((ny,nx)), np.ones((ny,nx))*4, np.ones((ny,nx))))
+    
+#     for j in range(Nc):
+#         C = np.zeros((ny,nx))
+
+#         lambda0 = 0
+
+#         for i in range(n_stages):
+#             cn = fC[n_int_comp*n_stages*j+(i)*n_int_comp:n_int_comp*n_stages*j+(i+1)*n_int_comp,0,0,:].detach().numpy()
+#             C = C + dlam*1/6*np.sum(np.multiply(mult_C, cn), axis=0)[np.newaxis]
+
+#             lambda0 = lambda0 + dlam
+
+#         list_C[ny*(j):ny*(j+1),:] = C.copy()
+
+#     return list_C
+
 # add new code here

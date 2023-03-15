@@ -14,6 +14,9 @@ from lpv_rk4 import *
 from mpcUtil import *
 import torch
 
+import torch
+from functorch import vmap, jacrev
+
 # -------------------------  NMPC function  ------------------------
 
 def output_NMPC_linear(system, encoder, u_min, u_max, y_min, y_max, x0, Q, R, dt, dlam, stages, y_reference_list, Nc=5, Nsim=30, max_iterations=1):
@@ -57,9 +60,9 @@ def output_NMPC_linear(system, encoder, u_min, u_max, y_min, y_max, x0, Q, R, dt
     get_A = Function("get_A",[x,u],[A_sym])
     get_B = Function("get_B",[x,u],[B_sym])
     get_C = Function("get_C",[x,u],[C_sym])
-    Get_A = get_A.map(Nc, "thread", 32)
-    Get_B = get_B.map(Nc, "thread", 32)
-    Get_C = get_C.map(Nc, "thread", 32)
+    Get_A = get_A.map(Nc, "thread", 10)
+    Get_B = get_B.map(Nc, "thread", 10)
+    Get_C = get_C.map(Nc, "thread", 10)
     
     # declare bounds of system
     # x_max_norm = (x_max - norm.y0)/norm.ystd
@@ -121,19 +124,80 @@ def output_NMPC_linear(system, encoder, u_min, u_max, y_min, y_max, x0, Q, R, dt
     system.reset_state()
     fig7 = plt.figure(figsize=[8.9, 8])
 
+
+    Lambda = np.array([])
+    lambda0 = 0
+    dlam = 1/stages
+    for i in np.arange(stages):
+        Lambda = np.hstack((Lambda, lambda0, lambda0 + dlam/2, lambda0 + dlam)) # Simpson
+        # Lambda = np.hstack((Lambda, lambda0, lambda0 + dlam)) # Trapezium
+        lambda0 = lambda0 + dlam
+
+    JacF = vmap(jacrev(encoder.fn, argnums=(0,1)))
+    JacH = vmap(jacrev(encoder.hn))
+    n_int_comp = 3
+    n_stages = stages
+    batch_size = Nc*stages*n_int_comp
+
+    mult_A = np.stack((np.ones((nx,nx)), np.ones((nx,nx))*4, np.ones((nx,nx))))
+    mult_B = np.stack((np.ones((nx,nu)), np.ones((nx,nu))*4, np.ones((nx,nu))))
+    mult_C = np.vstack((np.ones((ny,nx)), np.ones((ny,nx))*4, np.ones((ny,nx))))
+
+
     for mpciter in range(Nsim):
         start_time_iter = time.time()
         Xs = np.reshape(x_reference_list_normalized[:,mpciter+1:mpciter+Nc+1].T, (nx*Nc,1))
         Us = u_reference_list_normalized[:,mpciter:mpciter+Nc].T
 
         while True:
-            component_start = time.time()
+            
             #list_A, list_B = getABlist(x,u,Nc,nx,nu,Get_A,Get_B, list_A, list_B)
             #list_A, list_B, list_C = getABClist(x,u,Nc,nx,nu,ny,Get_A,Get_B,Get_C, list_A, list_B, list_C)
-            list_A, list_B, list_C = getABClist(np.hstack((x0_norm, x[:-nx])),u,Nc,nx,nu,ny,Get_A,Get_B,Get_C, list_A, list_B, list_C)
-            #temporary fix to get C with pk+1 instead of pk above
-            list_C = getClist(x,np.hstack((u[1:],u[-1])),Nc,nx,ny,Get_C, list_C)
-            components_time[0, mpciter + lpv_counter[mpciter]] = components_time[0, mpciter + lpv_counter[mpciter]] + time.time() - component_start
+
+            # list_A, list_B, list_C = getABClist(np.hstack((x0_norm, x[:-nx])),u,Nc,nx,nu,ny,Get_A,Get_B,Get_C, list_A, list_B, list_C)
+            # #temporary fix to get C with pk+1 instead of pk above
+            # list_C = getClist(x,np.hstack((u[1:],u[-1])),Nc,nx,ny,Get_C, list_C)
+
+
+            # component_start = time.time()
+            Xlam = np.kron(np.hstack((x0_norm, x[:-nx])), Lambda)
+            Ulam = np.kron(u, Lambda)
+            Xlam_C = np.kron(x, Lambda)
+
+            x_tens = torch.reshape(torch.Tensor(Xlam[np.newaxis].T),(batch_size,1,2))
+            u_tens = torch.reshape(torch.Tensor(Ulam[np.newaxis].T),(batch_size,1,1))
+            x_tens_C = torch.reshape(torch.Tensor(Xlam_C[np.newaxis].T),(batch_size,1,2))
+
+            component_start = time.time()
+            fA, fB = JacF(x_tens,u_tens)
+            fC = JacH(x_tens_C)
+            components_time[0, max_iterations*mpciter + lpv_counter[mpciter]] = components_time[0, max_iterations*mpciter + lpv_counter[mpciter]] + time.time() - component_start
+
+            for j in range(Nc):
+                A = np.zeros((nx,nx))
+                B = np.zeros([nx,nu])
+                C = np.zeros((ny,nx))
+
+                lambda0 = 0
+
+                for i in range(n_stages):
+                    an = fA[n_int_comp*n_stages*j+(i)*n_int_comp:n_int_comp*n_stages*j+(i+1)*n_int_comp,0,:,0,:].detach().numpy()
+                    A = A + dlam*1/6*np.sum(np.multiply(mult_A, an), axis=0)
+
+                    bn = fB[n_int_comp*n_stages*j+(i)*n_int_comp:n_int_comp*n_stages*j+(i+1)*n_int_comp,0,:,0,:].detach().numpy()
+                    B = B + dlam*1/6*np.sum(np.multiply(mult_B, bn), axis=0)
+
+                    cn = fC[n_int_comp*n_stages*j+(i)*n_int_comp:n_int_comp*n_stages*j+(i+1)*n_int_comp,0,0,:].detach().numpy()
+                    C = C + dlam*1/6*np.sum(np.multiply(mult_C, cn), axis=0)[np.newaxis]
+
+                    lambda0 = lambda0 + dlam
+
+                list_A[nx*(j):nx*(j+1),:] = A.copy()
+                list_B[nx*(j):nx*(j+1),:] = B.copy()
+                list_C[ny*(j):ny*(j+1),:] = C.copy()
+
+            # components_time[0, max_iterations*mpciter + lpv_counter[mpciter]] = components_time[0, max_iterations*mpciter + lpv_counter[mpciter]] + time.time() - component_start
+
             
             component_start = time.time()
             F0 = getF0(list_A, f0, Nc, nx)
@@ -170,16 +234,16 @@ def output_NMPC_linear(system, encoder, u_min, u_max, y_min, y_max, x0, Q, R, dt
             x[:] = ((Phi@x0_norm) + Gamma@u)[:] + F0[:,0]
 
             # lpv iteration output and input plot
-            if mpciter == 0:
-                str_label = "iter " + str(lpv_counter[mpciter] + 1)
+            # if mpciter == 0:
+            #     str_label = "iter " + str(lpv_counter[mpciter] + 1)
 
-                y_plot = norm.ystd*(Z@x + H0[:,0]) + norm.y0
-                plt.subplot(2,1,1)
-                plt.plot(y_plot, label=str_label)
+            #     y_plot = norm.ystd*(Z@x + H0[:,0]) + norm.y0
+            #     plt.subplot(2,1,1)
+            #     plt.plot(y_plot, label=str_label)
 
-                u_plot = norm.ustd*u + norm.u0
-                plt.subplot(2,1,2)
-                plt.plot(u_plot, label=str_label)
+            #     u_plot = norm.ustd*u + norm.u0
+            #     plt.subplot(2,1,2)
+            #     plt.plot(u_plot, label=str_label)
             
             lpv_counter[mpciter] += 1
             # print((np.linalg.norm(u-u_old)))
@@ -187,9 +251,9 @@ def output_NMPC_linear(system, encoder, u_min, u_max, y_min, y_max, x0, Q, R, dt
             # print(x_old)
             # print(((np.subtract(x, x_old))))
             if (lpv_counter[mpciter] >= max_iterations) or (np.linalg.norm(u-u_old) < 1e-1):
-                components_time[1, mpciter + lpv_counter[mpciter]-1] = components_time[1, mpciter + lpv_counter[mpciter]-1] + time.time() - component_start
+                components_time[1, max_iterations*mpciter + lpv_counter[mpciter]-1] = components_time[1, max_iterations*mpciter + lpv_counter[mpciter]-1] + time.time() - component_start
                 break
-            components_time[1, mpciter + lpv_counter[mpciter]-1] = components_time[1, mpciter + lpv_counter[mpciter]-1] + time.time() - component_start
+            components_time[1, max_iterations*mpciter + lpv_counter[mpciter]-1] = components_time[1, max_iterations*mpciter + lpv_counter[mpciter]-1] + time.time() - component_start
 
         print("MPC iteration: ", mpciter+1)
         print("LPV counter: ", lpv_counter[mpciter])
@@ -201,13 +265,13 @@ def output_NMPC_linear(system, encoder, u_min, u_max, y_min, y_max, x0, Q, R, dt
         # denormalize x and u
         #x_denormalized = norm.ystd*x0_norm + norm.y0
         u_denormalized = norm.ustd*u[0] + norm.u0
-        components_time[2, mpciter + lpv_counter[mpciter]-1] = components_time[2, mpciter + lpv_counter[mpciter]-1] + time.time() - component_start
+        components_time[2, max_iterations*mpciter + lpv_counter[mpciter]-1] = components_time[2, max_iterations*mpciter + lpv_counter[mpciter]-1] + time.time() - component_start
 
         # make system step and normalize
         component_start = time.time()
         system.x = system.f(system.x, u_denormalized)
         y_measured = system.h(system.x, u_denormalized)
-        components_time[3, mpciter + lpv_counter[mpciter]-1] = components_time[3, mpciter + lpv_counter[mpciter]-1] + time.time() - component_start
+        components_time[3, max_iterations*mpciter + lpv_counter[mpciter]-1] = components_time[3, max_iterations*mpciter + lpv_counter[mpciter]-1] + time.time() - component_start
         component_start = time.time()
         y_norm[:] = (y_measured - norm.y0)/norm.ystd
 
@@ -244,7 +308,7 @@ def output_NMPC_linear(system, encoder, u_min, u_max, y_min, y_max, x0, Q, R, dt
         # finished mpc time measurement
         end_time_iter = time.time()
         comp_t_log[mpciter] = end_time_iter - start_time_iter
-        components_time[2, mpciter + lpv_counter[mpciter]-1] = components_time[2, mpciter + lpv_counter[mpciter]-1] + time.time() - component_start
+        components_time[2, max_iterations*mpciter + lpv_counter[mpciter]-1] = components_time[2, max_iterations*mpciter + lpv_counter[mpciter]-1] + time.time() - component_start
 
     end = time.time()
     runtime = end - start
@@ -256,33 +320,34 @@ def output_NMPC_linear(system, encoder, u_min, u_max, y_min, y_max, x0, Q, R, dt
 if __name__ == "__main__":
     # MPC parameters
     dt = 0.1
-    Nc = 30
-    Nsim = 1
+    Nc = 10
+    Nsim = 450
     #dlam = 0.05
-    stages = 2
+    stages = 20
     dlam = 1.0/stages
-    max_iterations = 10
+    max_iterations = 4
     nx = 2
 
     # Weight matrices for the cost function
-    Q = 10*np.eye(nx)#np.matrix('10,0;0,10')
+    # Q = 10*np.eye(nx)
+    Q = np.matrix('1000,0;0,10')
     R = 1
     
     # Box constraints
     u_min = -4
     u_max = 4
-    y_min = [-2]
-    y_max = [2]
+    y_min = [-1.2]
+    y_max = [1.2]
 
     # Initial and final values
     x0 = np.zeros((nx,))
 
     # determine state references
     # x_reference_list = 1*np.load("references/randomLevelTime5_10Range-1_1Nsim500.npy")
-    #x_reference_list = 1*np.load("references/randomLevelTime25_30Range-1_1Nsim500.npy")
-    #x_reference_list = np.load("references/multiSineInOutNsim500.npy")
+    x_reference_list = 1*np.load("references/randomLevelTime25_30Range-1_1Nsim500.npy")
+    # x_reference_list = np.load("references/multiSineInOutNsim500_2.npy")/2
     #x_reference_list = np.vstack((np.zeros(300),0.3*np.ones(300)))
-    x_reference_list = np.vstack((np.zeros(40),np.hstack((1*np.ones(20),-1*np.ones(20)))))
+    #x_reference_list = np.vstack((np.zeros(40),np.hstack((1*np.ones(20),-1*np.ones(20)))))
     
     sys_unblanced = Systems.OutputUnbalancedDisc(dt=dt, sigma_n=[0.0]) #0.045, 0.014
     # sys_unblanced = Systems.LTI()
@@ -301,6 +366,10 @@ if __name__ == "__main__":
 
     print("Runtime:" + str(runtime))
 
+    np.save("Experiments/components_time_long.npy", components_time)
+    np.save("Experiments/comp_t_log_long.npy", comp_t_log)
+    np.save("Experiments/lpv_counter_long.npy", lpv_counter)
+
 # ------------------------------  Plots  -------------------------------
 
     nx = I_enc.nx
@@ -312,18 +381,18 @@ if __name__ == "__main__":
     plt.grid()
     # plt.xlabel("time [s]")
     plt.ylabel("angle [rad]")
-    plt.plot(np.arange(Nc+1), np.hstack((np.zeros(1),x_reference_list[1,:Nc])), '--', label='reference')
-    plt.plot(np.arange(Nc+1), np.ones(Nc+1)*y_max[0], 'r-.', label='max')
-    plt.plot(np.arange(Nc+1), np.ones(Nc+1)*y_min[0], 'r-.', label='min')
+    # plt.plot(np.arange(Nc+1), np.hstack((np.zeros(1),x_reference_list[1,:Nc])), '--', label='reference')
+    # plt.plot(np.arange(Nc+1), np.ones(Nc+1)*y_max[0], 'r-.', label='max')
+    # plt.plot(np.arange(Nc+1), np.ones(Nc+1)*y_min[0], 'r-.', label='min')
     plt.legend()
 
     plt.subplot(2,1,2)
     plt.grid()
     plt.xlabel("steps")
     plt.ylabel("input [V]")
-    plt.plot(np.arange(Nc), Us_denorm[0,:Nc], '--', label='steady state')
-    plt.plot(np.arange(Nc), np.ones(Nc)*u_max, 'r-.', label='max')
-    plt.plot(np.arange(Nc), np.ones(Nc)*u_min, 'r-.', label='min')
+    # plt.plot(np.arange(Nc), Us_denorm[0,:Nc], '--', label='steady state')
+    # plt.plot(np.arange(Nc), np.ones(Nc)*u_max, 'r-.', label='max')
+    # plt.plot(np.arange(Nc), np.ones(Nc)*u_min, 'r-.', label='min')
     plt.legend()
 
     plt.show()
@@ -346,16 +415,20 @@ if __name__ == "__main__":
     # plt.grid()
     # plt.legend()
 
+    log_q = np.load("Experiments/log_q.npy")
+    log_w = np.load("Experiments/log_w.npy")
+
     Us_denorm = Us*I_enc.norm.ustd + I_enc.norm.u0
     plt.subplot(2,1,1)
     plt.plot(np.arange(Nsim)*dt, u_log[:], label='input')
     plt.plot(np.arange(Nsim)*dt, Us_denorm[0,:Nsim], '--', label='steady state')
     plt.plot(np.arange(Nsim)*dt, np.ones(Nsim)*u_max, 'r-.', label='max')
     plt.plot(np.arange(Nsim)*dt, np.ones(Nsim)*u_min, 'r-.', label='min')
-    plt.ylabel("input [V]")
-    plt.xlabel("time [s]")
+    # plt.plot(np.arange(Nsim)*dt, u_log[:] - log_w[0,:], label='LPV-NMPC')
+    plt.ylabel("input [V]", fontsize=12)
+    # plt.xlabel("time [s]", fontsize=12)
     plt.grid()
-    plt.legend(loc='upper right');
+    plt.legend(loc='upper right', fontsize=12);
 
     plt.subplot(2,1,2)
     plt.plot(np.arange(Nsim+1)*dt, y_log, label='output')
@@ -363,11 +436,12 @@ if __name__ == "__main__":
     plt.plot(np.arange(Nsim+1)*dt, y_est_log, 'y:', label='obsv est')
     plt.plot(np.arange(Nsim+1)*dt, np.ones(Nsim+1)*y_max[0], 'r-.', label='max')
     plt.plot(np.arange(Nsim+1)*dt, np.ones(Nsim+1)*y_min[0], 'r-.', label='min')
+    plt.plot(np.arange(Nsim+1)*dt, y_log[:] - np.hstack((0,log_q[0,:])), label='LPV-NMPC')
     #plt.plot(np.arange(Nsim+1)*dt, y_log - np.hstack((np.zeros(1),x_reference_list[1,:Nsim])), label='error')
-    plt.ylabel("angle [rad]")
-    plt.xlabel("time [s]")
+    plt.ylabel("angle [rad]", fontsize=12)
+    plt.xlabel("time [s]", fontsize=12)
     plt.grid()    
-    plt.legend(loc='upper right');
+    plt.legend(loc='upper right', fontsize=12);
 
     plt.show()
 
@@ -384,7 +458,7 @@ if __name__ == "__main__":
     # plt.legend();
     # plt.show()
 
-    fig4 = plt.figure(figsize=[5.0, 5.0])
+    fig4 = plt.figure(figsize=[8.9, 4.0])
     #plt.subplot(2,1,1)
     plt.step(np.arange(Nsim), lpv_counter, label='lpv counter')
     plt.plot(np.arange(Nsim), np.ones(Nsim)*max_iterations, '--', label='max iter')
@@ -394,7 +468,7 @@ if __name__ == "__main__":
     plt.legend();
     # plt.show()
 
-    fig4 = plt.figure(figsize=[5.0, 5.0])
+    fig4 = plt.figure(figsize=[8.9, 4.0])
     #plt.subplot(2,1,2)
     plt.step(np.arange(Nsim), comp_t_log, label='computation time')
     plt.plot(np.arange(Nsim), np.ones(Nsim)*dt, '--', label='dt')
@@ -404,7 +478,7 @@ if __name__ == "__main__":
     plt.legend()
     # plt.show()
 
-    fig2 = plt.figure(figsize=[5.0, 5.0])#['getAB', 'solve', 'overhead', 'sim']
+    fig2 = plt.figure(figsize=[8.9, 4.0])#['getAB', 'solve', 'overhead', 'sim']
     data1 = np.trim_zeros(components_time[0,:])
     data2 = np.trim_zeros(components_time[1,:])
     data3 = np.trim_zeros(components_time[2,:])
@@ -417,8 +491,8 @@ if __name__ == "__main__":
     plt.xlabel("components")
     # plt.show()
 
-    fig3 = plt.figure(figsize=[5.0, 5.0])#['getAB', 'solve', 'overhead', 'sim']
+    fig3 = plt.figure(figsize=[8.9, 4.0])#['getAB', 'solve', 'overhead', 'sim']
     plt.bar(['getAB', 'solve', 'overhead', 'sim'], np.sum(components_time, axis=1))
     plt.ylabel("time [s]")
     plt.xlabel("components")
-    # plt.show()
+    plt.show()

@@ -94,7 +94,7 @@ class OutputUnbalancedDisc(deepSI.System_deriv):
         return [dz1,dz2]
 
     def h(self,x,u):
-        return x[1] + np.random.normal(0, self.sigma_n[0], 1)# + np.hstack((np.random.normal(0, self.sigma_n[0], 1), np.random.normal(0, self.sigma_n[1], 1)))
+        return x[1] + np.random.normal(0, self.sigma_n[0])# + np.hstack((np.random.normal(0, self.sigma_n[0], 1), np.random.normal(0, self.sigma_n[1], 1)))
 
 class SinCosUnbalancedDisc(deepSI.System_deriv):
     def __init__(self, dt=0.025):
