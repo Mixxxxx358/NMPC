@@ -125,6 +125,7 @@ def output_NMPC_linear(system, encoder, u_min, u_max, y_min, y_max, x0, Q, R, dt
     fig7 = plt.figure(figsize=[8.9, 8])
 
 
+    ######################### Start Offline conversion  ########################
     Lambda = np.array([])
     lambda0 = 0
     dlam = 1/stages
@@ -142,6 +143,7 @@ def output_NMPC_linear(system, encoder, u_min, u_max, y_min, y_max, x0, Q, R, dt
     mult_A = np.stack((np.ones((nx,nx)), np.ones((nx,nx))*4, np.ones((nx,nx))))
     mult_B = np.stack((np.ones((nx,nu)), np.ones((nx,nu))*4, np.ones((nx,nu))))
     mult_C = np.vstack((np.ones((ny,nx)), np.ones((ny,nx))*4, np.ones((ny,nx))))
+    ######################### End Offline conversion  ########################
 
 
     for mpciter in range(Nsim):
@@ -160,6 +162,8 @@ def output_NMPC_linear(system, encoder, u_min, u_max, y_min, y_max, x0, Q, R, dt
 
 
             # component_start = time.time()
+
+            ######################### Start Online conversion  ########################
             Xlam = np.kron(np.hstack((x0_norm, x[:-nx])), Lambda)
             Ulam = np.kron(u, Lambda)
             Xlam_C = np.kron(x, Lambda)
@@ -197,7 +201,7 @@ def output_NMPC_linear(system, encoder, u_min, u_max, y_min, y_max, x0, Q, R, dt
                 list_C[ny*(j):ny*(j+1),:] = C.copy()
 
             # components_time[0, max_iterations*mpciter + lpv_counter[mpciter]] = components_time[0, max_iterations*mpciter + lpv_counter[mpciter]] + time.time() - component_start
-
+            ######################### End Online conversion  ########################
             
             component_start = time.time()
             F0 = getF0(list_A, f0, Nc, nx)
