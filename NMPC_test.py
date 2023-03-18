@@ -15,7 +15,7 @@ from mpcUtil import *
 import torch
 
 import torch
-from functorch import vmap, jacrev
+from functorch import vmap, jacrev, jacfwd
 
 # -------------------------  NMPC function  ------------------------
 
